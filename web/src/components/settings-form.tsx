@@ -18,7 +18,6 @@ import { Switch } from "@/components/ui/switch";
 import { type SettingKey } from "@/lib/types";
 import { Slider } from "@/components/ui/slider";
 import { TagsInput } from "@/components/ui/tags-input";
-import { split } from "lodash";
 import { RadioGroup, RadioGroupItem } from "./ui/radio-group";
 
 export default function SettingsForm() {
@@ -249,11 +248,7 @@ export default function SettingsForm() {
           <div className="flex flex-col space-y-4">
             <TagsInput
               maxTags={20}
-              value={
-                (settings?.tags?.length ?? 0 > 0)
-                  ? split(settings?.tags, ",")
-                  : []
-              }
+              value={settings?.tags ? settings.tags.split(",") : []}
               onChange={(tags) => void setSetting("tags", tags.join(","))}
             />
           </div>
