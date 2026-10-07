@@ -15,6 +15,8 @@ public class TelegramUpdateHandler implements Client.ResultHandler {
 
     private Consumer<TdApi.UpdateFile> onFileUpdated;
 
+    private Consumer<TdApi.UpdateFileDownload> onFileDownloadUpdated;
+
     private Consumer<TdApi.UpdateFileDownloads> onFileDownloadsUpdated;
 
     private Consumer<TdApi.Object> onChatUpdated;
@@ -37,8 +39,10 @@ public class TelegramUpdateHandler implements Client.ResultHandler {
             case TdApi.UpdateFile.CONSTRUCTOR:
                 if (onFileUpdated != null)
                     onFileUpdated.accept((TdApi.UpdateFile) object);
+                break;
             case TdApi.UpdateFileDownload.CONSTRUCTOR:
-                log.trace("File download update: %s".formatted(object));
+                if (onFileDownloadUpdated != null)
+                    onFileDownloadUpdated.accept((TdApi.UpdateFileDownload) object);
                 break;
             case TdApi.UpdateFileDownloads.CONSTRUCTOR:
                 if (onFileDownloadsUpdated != null)
@@ -48,6 +52,7 @@ public class TelegramUpdateHandler implements Client.ResultHandler {
                 if (onMessageReceived != null) {
                     onMessageReceived.accept(((TdApi.UpdateNewMessage) object).message);
                 }
+                break;
             case TdApi.UpdateNewChat.CONSTRUCTOR:
             case TdApi.UpdateChatTitle.CONSTRUCTOR:
             case TdApi.UpdateChatPhoto.CONSTRUCTOR:
@@ -57,8 +62,12 @@ public class TelegramUpdateHandler implements Client.ResultHandler {
                 if (onChatUpdated != null) {
                     onChatUpdated.accept(object);
                 }
+                break;
             default:
-                log.trace("Unsupported telegram update: %s".formatted(object));
+                // Lazy: TdApi.toString() is a native call and this branch sees most of TDLib's update stream.
+                if (log.isTraceEnabled()) {
+                    log.trace("Unsupported telegram update: {}", object);
+                }
         }
     }
 
@@ -68,6 +77,10 @@ public class TelegramUpdateHandler implements Client.ResultHandler {
 
     public void setOnFileUpdated(Consumer<TdApi.UpdateFile> onFileUpdated) {
         this.onFileUpdated = onFileUpdated;
+    }
+
+    public void setOnFileDownloadUpdated(Consumer<TdApi.UpdateFileDownload> onFileDownloadUpdated) {
+        this.onFileDownloadUpdated = onFileDownloadUpdated;
     }
 
     public void setOnFileDownloadsUpdated(Consumer<TdApi.UpdateFileDownloads> onFileDownloadsUpdated) {

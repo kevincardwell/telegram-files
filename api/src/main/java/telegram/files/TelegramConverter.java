@@ -179,6 +179,9 @@ public class TelegramConverter {
         fileObject.put("formatDate", DateUtil.date(fileObject.getLong("date") * 1000).toString());
         fileObject.put("extra", extra);
         fileObject.put("originalDeleted", message == null);
+        if (StrUtil.isBlank(fileObject.getString("thumbnailUniqueId")) && fileHandler != null) {
+            fileObject.put("thumbnailUniqueId", fileHandler.getThumbnailFileUniqueId());
+        }
 
         if (message != null) {
             fileObject.put("hasReply", Convert.toInt(BeanUtil.getProperty(message, "interactionInfo.replyInfo.replyCount"), 0) > 0);

@@ -16,11 +16,12 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.concurrent.CopyOnWriteArrayList;
 
 public class TelegramVerticles {
     private static final Log log = LogFactory.get();
 
-    private static final List<TelegramVerticle> telegramVerticles = new ArrayList<>();
+    private static final List<TelegramVerticle> telegramVerticles = new CopyOnWriteArrayList<>();
 
     public static Future<Void> initTelegramVerticles(Vertx vertx) {
         return DataVerticle.telegramRepository.getAll()

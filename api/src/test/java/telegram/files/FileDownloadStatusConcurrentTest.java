@@ -131,7 +131,9 @@ public class FileDownloadStatusConcurrentTest {
         String javaPath = System.getProperty("java.home") + "/bin/java";
 
         for (int i = 0; i < processCount; i++) {
-            String localPath = "local_path_" + i;
+            // Paths unique to this test: sibling tests write "local_path_N", and an update that changes
+            // neither path nor status is a no-op, which left their completion date in place.
+            String localPath = "mp_local_path_" + i;
             ProcessBuilder pb = new ProcessBuilder(javaPath,
                     "-cp",
                     classpath,
@@ -161,7 +163,7 @@ public class FileDownloadStatusConcurrentTest {
                 "Download status should be one of the concurrent updates"
         );
         Assertions.assertTrue(
-                IntStream.range(0, processCount).anyMatch(i -> finalRecord.localPath().equals("local_path_" + i)),
+                IntStream.range(0, processCount).anyMatch(i -> finalRecord.localPath().equals("mp_local_path_" + i)),
                 "Local path should match one of the concurrent updates"
         );
         Assertions.assertTrue(

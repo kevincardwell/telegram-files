@@ -55,6 +55,22 @@ class MessageFilterTest {
     }
 
     @Test
+    void testSandboxBlocksDangerousCalls() {
+        // Each of these reached reflection, deserialization, process execution or the filesystem upstream.
+        for (String expr : List.of(
+                "class:loadClass('java.lang.Runtime') != null",
+                "obj:isNull(null)",
+                "zip:zip('/tmp') != null",
+                "net:getLocalhostStr() != null",
+                "str:contains(content.text.text, 'Hello') && ''.class.forName('java.lang.Runtime') != null",
+                "new('cn.hutool.core.util.RuntimeUtil') != null")) {
+            assertTrue(MessageFilter.filter(messages, expr).isEmpty(), expr);
+        }
+        // ...while the documented helpers keep working.
+        assertEquals(2, MessageFilter.filter(messages, "re:isMatch('.*Hello.*', content.text.text)").size());
+    }
+
+    @Test
     void testFilterById() {
         String expr = "id > 1";
         List<TdApi.Message> filtered = MessageFilter.filter(messages, expr);

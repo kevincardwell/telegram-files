@@ -85,6 +85,11 @@ public abstract class Transfer {
         transferRecord = fileRecord;
         transferStatusUpdated.accept(new TransferStatusUpdated(fileRecord, FileRecord.TransferStatus.transferring, null));
         try {
+            if (StrUtil.isBlank(fileRecord.localPath())) {
+                log.error("File {} has no local path", fileRecord.uniqueId());
+                transferStatusUpdated.accept(new TransferStatusUpdated(fileRecord, FileRecord.TransferStatus.error, null));
+                return;
+            }
             File originFile = new File(fileRecord.localPath());
             if (!originFile.exists()) {
                 log.error("File {} not found: {}", fileRecord.id(), fileRecord.localPath());
@@ -93,11 +98,19 @@ public abstract class Transfer {
             }
 
             String transferPath = getTransferPath(fileRecord);
+            // Captions and AI-chosen paths are untrusted: never let "../" escape the destination.
+            Path root = Path.of(destination).toAbsolutePath().normalize();
+            if (!Path.of(transferPath).toAbsolutePath().normalize().startsWith(root)) {
+                log.error("File {} transfer path {} escapes destination {}", fileRecord.uniqueId(), transferPath, destination);
+                transferStatusUpdated.accept(new TransferStatusUpdated(fileRecord, FileRecord.TransferStatus.error, null));
+                return;
+            }
             boolean isOverwrite = false;
             if (FileUtil.exist(transferPath)) {
                 if (duplicationPolicy == DuplicationPolicy.SKIP) {
-                    log.trace("Skip file {}", fileRecord.id());
-                    transferStatusUpdated.accept(new TransferStatusUpdated(fileRecord, FileRecord.TransferStatus.idle, null));
+                    // Final state: writing "idle" back made the history scan pick the same files forever.
+                    log.debug("Skip file {}: {} already exists", fileRecord.id(), transferPath);
+                    transferStatusUpdated.accept(new TransferStatusUpdated(fileRecord, FileRecord.TransferStatus.completed, null));
                     return;
                 }
 

@@ -91,8 +91,12 @@ class TransferTest {
         // Transfer
         transfer.transfer(mockFileRecord);
 
-        // Verify status updates
+        // Skipped is final: writing "idle" back made the history scan re-queue the file forever.
+        // The source file stays where it is (no local path change).
         verify(mockStatusUpdater, times(1)).accept(argThat(
+                status -> status.transferStatus() == FileRecord.TransferStatus.completed && status.localPath() == null
+        ));
+        verify(mockStatusUpdater, never()).accept(argThat(
                 status -> status.transferStatus() == FileRecord.TransferStatus.idle
         ));
     }

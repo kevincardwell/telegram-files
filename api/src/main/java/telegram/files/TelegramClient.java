@@ -1,8 +1,8 @@
 package telegram.files;
 
-import cn.hutool.core.util.TypeUtil;
 import cn.hutool.log.Log;
 import cn.hutool.log.LogFactory;
+import io.vertx.core.Context;
 import io.vertx.core.Future;
 import io.vertx.core.Promise;
 import io.vertx.core.Vertx;
@@ -51,21 +51,32 @@ public class TelegramClient {
 
     @SuppressWarnings("unchecked")
     public <R extends TdApi.Object> Future<R> execute(TdApi.Function<R> method, boolean ignoreException) {
-        log.trace("Execute method: %s".formatted(TypeUtil.getTypeArgument(method.getClass())));
         if (!initialized) {
             throw new IllegalStateException("Client is not initialized");
         }
-        return Future.future(promise -> client.send(method, object -> {
-            if (object.getConstructor() == TdApi.Error.CONSTRUCTOR) {
-                if (ignoreException) {
-                    promise.complete(null);
-                    return;
+        // TDLib answers on its single native thread. Complete on the caller's Vert.x context instead, so
+        // continuations neither race each other on shared state nor stall every account's updates.
+        Context context = Vertx.currentContext();
+        Promise<R> promise = Promise.promise();
+        client.send(method, object -> {
+            Runnable complete = () -> {
+                if (object.getConstructor() == TdApi.Error.CONSTRUCTOR) {
+                    if (ignoreException) {
+                        promise.complete(null);
+                    } else {
+                        promise.fail(new TelegramRunException((TdApi.Error) object));
+                    }
+                } else {
+                    promise.complete((R) object);
                 }
-                promise.fail(new TelegramRunException((TdApi.Error) object));
+            };
+            if (context == null) {
+                complete.run();
             } else {
-                promise.complete((R) object);
+                context.runOnContext(_ -> complete.run());
             }
-        }));
+        });
+        return promise.future();
     }
 
     public <R extends TdApi.Object> Future<R> execute(TdApi.Function<R> method, long timeoutMs, Vertx vertx) {
@@ -99,7 +110,7 @@ public class TelegramClient {
     private static class LogMessageHandler implements Client.LogMessageHandler {
         @Override
         public void onLogMessage(int verbosityLevel, String message) {
-            log.debug("TDLib: %s".formatted(message));
+            log.debug("TDLib: {}", message);
         }
     }
 }

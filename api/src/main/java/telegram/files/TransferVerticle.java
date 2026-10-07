@@ -8,16 +8,16 @@ import io.vertx.core.AbstractVerticle;
 import io.vertx.core.Future;
 import io.vertx.core.Promise;
 import io.vertx.core.json.JsonObject;
+import io.vertx.sqlclient.templates.SqlTemplate;
 import org.jooq.lambda.tuple.Tuple3;
 import telegram.files.repository.FileRecord;
 import telegram.files.repository.SettingAutoRecords;
 
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.LinkedBlockingQueue;
-import java.util.concurrent.TimeUnit;
 
 public class TransferVerticle extends AbstractVerticle {
     private static final Log log = LogFactory.get();
@@ -26,9 +26,11 @@ public class TransferVerticle extends AbstractVerticle {
 
     private static final int TRANSFER_INTERVAL = 3 * 1000;
 
+    private static final int HISTORY_BATCH_SIZE = 200;
+
     private final SettingAutoRecords autoRecords;
 
-    private final Map<String, Transfer> transfers = new HashMap<>();
+    private final Map<String, Transfer> transfers = new ConcurrentHashMap<>();
 
     private final BlockingQueue<WaitingTransferFile> waitingTransferFiles = new LinkedBlockingQueue<>();
 
@@ -36,17 +38,30 @@ public class TransferVerticle extends AbstractVerticle {
 
     private volatile Transfer beingTransferred;
 
+    private boolean draining = false;
+
     public TransferVerticle() {
         this.autoRecords = AutomationsHolder.INSTANCE.autoRecords();
         AutomationsHolder.INSTANCE.registerOnRemoveListener(removedItems -> removedItems.forEach(item -> {
-            waitingTransferFiles.removeIf(waitingTransferFile -> waitingTransferFile.uniqueId().equals(item.uniqueKey()));
+            waitingTransferFiles.removeIf(w -> w.telegramId() == item.telegramId && w.chatId() == item.chatId);
             transfers.remove(item.uniqueKey());
         }));
     }
 
     @Override
     public void start(Promise<Void> startPromise) {
-        initEventConsumer().onSuccess(_ -> {
+        // A crash mid-move left rows "transferring" forever: only idle files are ever picked up again.
+        SqlTemplate.forUpdate(DataVerticle.pool, "UPDATE file_record SET transfer_status = 'idle' WHERE transfer_status = 'transferring'")
+                .execute(Map.of())
+                .onSuccess(r -> {
+                    if (r.rowCount() > 0) log.info("Reset %d interrupted transfers".formatted(r.rowCount()));
+                })
+                .<Void>mapEmpty()
+                .recover(e -> {
+                    log.error("Failed to reset interrupted transfers: %s".formatted(e.getMessage()));
+                    return Future.succeededFuture();
+                })
+                .compose(_ -> initEventConsumer()).onSuccess(_ -> {
             vertx.setPeriodic(0, HISTORY_SCAN_INTERVAL, _ -> addHistoryFiles());
             vertx.setPeriodic(0, TRANSFER_INTERVAL, _ -> startTransfer());
 
@@ -80,45 +95,34 @@ public class TransferVerticle extends AbstractVerticle {
     }
 
     private Future<Void> initEventConsumer() {
-        vertx.eventBus().consumer(EventEnum.TELEGRAM_EVENT.address(), message -> {
-            JsonObject jsonObject = (JsonObject) message.body();
-            EventPayload payload = jsonObject.getJsonObject("payload").mapTo(EventPayload.class);
-            if (payload == null || payload.type() != EventPayload.TYPE_FILE_STATUS) {
+        vertx.eventBus().consumer(EventEnum.FILE_DOWNLOADED.address(), message -> {
+            String uniqueId = ((JsonObject) message.body()).getString("uniqueId");
+            FileRecord fileRecord = Future.await(DataVerticle.fileRepository.getByUniqueId(uniqueId));
+            if (fileRecord == null || "thumbnail".equals(fileRecord.type())) {
+                // Thumbnails are internal preview files; never transfer them.
                 return;
             }
 
-            if (payload.data() != null && payload.data() instanceof Map<?, ?> data && StrUtil.isNotBlank((String) data.get("downloadStatus"))) {
-                FileRecord.DownloadStatus downloadStatus = FileRecord.DownloadStatus.valueOf((String) data.get("downloadStatus"));
-                if (downloadStatus != FileRecord.DownloadStatus.completed) {
-                    return;
+            SettingAutoRecords.Automation automation = null;
+            if (fileRecord.threadChatId() != 0 && fileRecord.messageThreadId() != 0 && fileRecord.threadChatId() == fileRecord.chatId()) {
+                // thread message file,try to get the main message
+                FileRecord mainFileRecord = Future.await(DataVerticle.fileRepository.getMainFileByThread(
+                        fileRecord.telegramId(),
+                        fileRecord.threadChatId(),
+                        fileRecord.messageThreadId()));
+                if (mainFileRecord != null) {
+                    automation = autoRecords.getItem(mainFileRecord.telegramId(), mainFileRecord.chatId());
                 }
-                FileRecord fileRecord = Future.await(DataVerticle.fileRepository.getByUniqueId((String) data.get("uniqueId")));
-                if (fileRecord == null || "thumbnail".equals(fileRecord.type())) {
-                    // Thumbnails are internal preview files; never transfer them.
-                    return;
-                }
+            } else {
+                automation = autoRecords.getItem(fileRecord.telegramId(), fileRecord.chatId());
+            }
 
-                SettingAutoRecords.Automation automation = null;
-                if (fileRecord.threadChatId() != 0 && fileRecord.messageThreadId() != 0 && fileRecord.threadChatId() == fileRecord.chatId()) {
-                    // thread message file,try to get the main message
-                    FileRecord mainFileRecord = Future.await(DataVerticle.fileRepository.getMainFileByThread(
-                            fileRecord.telegramId(),
-                            fileRecord.threadChatId(),
-                            fileRecord.messageThreadId()));
-                    if (mainFileRecord != null) {
-                        automation = autoRecords.getItem(mainFileRecord.telegramId(), mainFileRecord.chatId());
-                    }
-                } else {
-                    automation = autoRecords.getItem(fileRecord.telegramId(), fileRecord.chatId());
-                }
+            if (automation == null || !automation.transfer.enabled || getTransfer(automation) == null) {
+                return;
+            }
 
-                if (automation == null || !automation.transfer.enabled || getTransfer(automation) == null) {
-                    return;
-                }
-
-                if (addWaitingTransferFile(automation.telegramId, automation.chatId, fileRecord.uniqueId())) {
-                    log.debug("Add file to transfer queue: %s".formatted(fileRecord.uniqueId()));
-                }
+            if (addWaitingTransferFile(automation.telegramId, automation.chatId, fileRecord.uniqueId())) {
+                log.debug("Add file to transfer queue: %s".formatted(fileRecord.uniqueId()));
             }
         });
 
@@ -142,7 +146,8 @@ public class TransferVerticle extends AbstractVerticle {
             }
             Tuple3<List<FileRecord>, Long, Long> filesTuple = Future.await(DataVerticle.fileRepository.getFiles(automation.chatId,
                     Map.of("downloadStatus", FileRecord.DownloadStatus.completed.name(),
-                            "transferStatus", FileRecord.TransferStatus.idle.name()
+                            "transferStatus", FileRecord.TransferStatus.idle.name(),
+                            "limit", String.valueOf(HISTORY_BATCH_SIZE)
                     )
             ));
             List<FileRecord> files = filesTuple.v1;
@@ -165,7 +170,6 @@ public class TransferVerticle extends AbstractVerticle {
 
             if (count > 0) {
                 log.info("Add history files to transfer queue: %s".formatted(count));
-                break;
             }
         }
     }
@@ -208,59 +212,69 @@ public class TransferVerticle extends AbstractVerticle {
         });
     }
 
+    /**
+     * Drains the queue (it used to move one file per tick, i.e. at most one file every 3 seconds).
+     * When a drain moved files, the next history batch is queued right away instead of in 2 minutes.
+     */
     public void startTransfer() {
-        if (beingTransferred != null) {
+        if (beingTransferred != null || draining) {
             return;
         }
+        draining = true;
+        int moved = 0;
         try {
-            WaitingTransferFile waitingTransferFile = waitingTransferFiles.poll(1, TimeUnit.SECONDS);
-            if (waitingTransferFile == null) {
-                log.trace("No file to transfer");
-                return;
+            WaitingTransferFile waitingTransferFile;
+            while (!isStopped && (waitingTransferFile = waitingTransferFiles.poll()) != null) {
+                Transfer transfer = transfers.get("%d:%d".formatted(waitingTransferFile.telegramId(), waitingTransferFile.chatId()));
+                if (transfer == null) {
+                    continue;
+                }
+                FileRecord fileRecord = Future.await(DataVerticle.fileRepository.getByUniqueId(waitingTransferFile.uniqueId));
+                if (fileRecord == null) {
+                    log.error("File not found: %s".formatted(waitingTransferFile.uniqueId));
+                    continue;
+                }
+                if (startTransfer(fileRecord, transfer)) {
+                    moved++;
+                }
             }
-            Transfer transfer = transfers.get("%d:%d".formatted(waitingTransferFile.telegramId(), waitingTransferFile.chatId()));
-            if (transfer == null) {
-                return;
-            }
-            if (beingTransferred == transfer) {
-                waitingTransferFiles.add(waitingTransferFile);
-                log.debug("Transfer is busy: %s".formatted(waitingTransferFile.uniqueId));
-                return;
-            }
-            FileRecord fileRecord = Future.await(DataVerticle.fileRepository.getByUniqueId(waitingTransferFile.uniqueId));
-            if (fileRecord == null) {
-                log.error("File not found: %s".formatted(waitingTransferFile.uniqueId));
-                return;
-            }
-
-            startTransfer(fileRecord, transfer);
         } catch (Exception e) {
-            if (e instanceof InterruptedException) {
-                log.debug("Transfer loop interrupted");
-            } else {
-                log.error(e, "Transfer error");
-            }
+            log.error(e, "Transfer error");
+        } finally {
+            draining = false;
+        }
+        if (moved > 0 && !isStopped) {
+            addHistoryFiles();
         }
     }
 
-    public void startTransfer(FileRecord fileRecord, Transfer transfer) {
+    /**
+     * @return whether the file left the idle state (so it won't be picked up by the history scan again)
+     */
+    public boolean startTransfer(FileRecord fileRecord, Transfer transfer) {
         if (isStopped) {
-            return;
-        }
-        if (!fileRecord.isDownloadStatus(FileRecord.DownloadStatus.completed)
-            || StrUtil.isBlank(fileRecord.localPath())) {
-            log.warn("File {} is not downloaded yet", fileRecord.id());
-            return;
+            return false;
         }
         if (fileRecord.transferStatus() != null
             && !fileRecord.isTransferStatus(FileRecord.TransferStatus.idle)) {
             log.debug("File {} transfer status is not idle: {}", fileRecord.id(), fileRecord.transferStatus());
-            return;
+            return false;
+        }
+        if (!fileRecord.isDownloadStatus(FileRecord.DownloadStatus.completed)
+            || StrUtil.isBlank(fileRecord.localPath())) {
+            // Mark it instead of skipping silently: it would otherwise be re-queued forever.
+            log.warn("File {} has no downloaded copy to transfer", fileRecord.uniqueId());
+            updateTransferStatus(fileRecord, FileRecord.TransferStatus.error, null);
+            return true;
         }
 
         beingTransferred = transfer;
-        transfer.transfer(fileRecord);
-        beingTransferred = null;
+        try {
+            transfer.transfer(fileRecord);
+        } finally {
+            beingTransferred = null;
+        }
+        return true;
     }
 
     private void updateTransferStatus(FileRecord fileRecord, FileRecord.TransferStatus transferStatus, String localPath) {

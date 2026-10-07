@@ -12,6 +12,7 @@ import cn.hutool.core.util.StrUtil;
 import cn.hutool.log.Log;
 import cn.hutool.log.LogFactory;
 import io.vertx.core.AbstractVerticle;
+import io.vertx.core.Context;
 import io.vertx.core.Future;
 import io.vertx.core.Promise;
 import io.vertx.core.VertxException;
@@ -36,9 +37,9 @@ public class TelegramVerticle extends AbstractVerticle {
 
     private TelegramChats telegramChats;
 
-    public boolean authorized = false;
+    public volatile boolean authorized = false;
 
-    public TdApi.AuthorizationState lastAuthorizationState;
+    public volatile TdApi.AuthorizationState lastAuthorizationState;
 
     public String rootPath;
 
@@ -48,7 +49,7 @@ public class TelegramVerticle extends AbstractVerticle {
 
     private boolean needDelete = false;
 
-    public TelegramRecord telegramRecord;
+    public volatile TelegramRecord telegramRecord;
 
     private AvgSpeed avgSpeed = new AvgSpeed();
 
@@ -58,9 +59,15 @@ public class TelegramVerticle extends AbstractVerticle {
 
     private volatile TdApi.ConnectionState lastConnectionState;
 
-    private long lastFileEventTime;
-
     private long lastFileDownloadEventTime;
+
+    // The maps below are only touched on this verticle's context (TDLib updates are dispatched onto it).
+
+    // fileId -> last time a progress event for that file was pushed to the UI
+    private final Map<Integer, Long> lastFileEventTimes = new HashMap<>();
+
+    // files the database already records as downloading: their progress ticks skip the database
+    private final Set<Integer> downloadingFileIds = new HashSet<>();
 
     public TelegramVerticle(String rootPath) {
         this.rootPath = rootPath;
@@ -94,12 +101,17 @@ public class TelegramVerticle extends AbstractVerticle {
         TelegramUpdateHandler telegramUpdateHandler = new TelegramUpdateHandler();
         telegramUpdateHandler.setOnAuthorizationStateUpdated(this::onAuthorizationStateUpdated);
         telegramUpdateHandler.setOnFileUpdated(this::onFileUpdated);
+        telegramUpdateHandler.setOnFileDownloadUpdated(this::onFileDownloadUpdated);
         telegramUpdateHandler.setOnFileDownloadsUpdated(this::onFileDownloadsUpdated);
         telegramUpdateHandler.setOnChatUpdated(telegramChats::onChatUpdated);
         telegramUpdateHandler.setOnMessageReceived(this::onMessageReceived);
         telegramUpdateHandler.setOnConnectionStateUpdated(this::onConnectionStateUpdated);
 
-        client.initialize(telegramUpdateHandler, this::handleException, this::handleException);
+        // Handle updates on this verticle's context rather than TDLib's single native thread: state is then
+        // confined to one thread, and the first update can't arrive before initialize() has returned.
+        Context ctx = context;
+        client.initialize(update -> ctx.runOnContext(_ -> telegramUpdateHandler.onResult(update)),
+                this::handleException, this::handleException);
         Future.all(initEventConsumer(), initAvgSpeed())
                 .compose(_ -> this.enableProxy(this.proxyName))
                 .compose(_ -> this.initDownloadStatusReconciliation())
@@ -322,7 +334,8 @@ public class TelegramVerticle extends AbstractVerticle {
                         }
 //                        return Future.failedFuture("Unknown file download status");
                     }
-                    if (dbFileRecord != null && !dbFileRecord.isDownloadStatus(FileRecord.DownloadStatus.idle)) {
+                    if (dbFileRecord != null && !dbFileRecord.isDownloadStatus(FileRecord.DownloadStatus.idle)
+                        && !dbFileRecord.isDownloadStatus(FileRecord.DownloadStatus.error)) {
                         return Future.failedFuture("File is already downloading or completed");
                     }
 
@@ -482,7 +495,7 @@ public class TelegramVerticle extends AbstractVerticle {
     }
 
     public Future<Void> removeFile(Integer fileId, String uniqueId) {
-        return client.execute(new TdApi.GetFile(fileId))
+        return (fileId == null ? Future.<TdApi.File>succeededFuture() : client.execute(new TdApi.GetFile(fileId)))
                 .otherwise((TdApi.File) null)
                 .compose(file -> DataVerticle.fileRepository
                         .getByUniqueId(uniqueId)
@@ -691,7 +704,7 @@ public class TelegramVerticle extends AbstractVerticle {
 
     public Future<String> execute(String method, Object params) {
         String code = RandomUtil.randomString(10);
-        log.trace("[%s] Execute code: %s method: %s, params: %s".formatted(getRootId(), code, method, params));
+        log.trace("[{}] Execute code: {} method: {}, params: {}", getRootId(), code, method, params);
         return Future.future(promise -> {
             TdApi.Function<?> func = TdApiHelp.getFunction(method, params);
             if (func == null) {
@@ -699,7 +712,7 @@ public class TelegramVerticle extends AbstractVerticle {
                 return;
             }
             client.getNativeClient().send(func, object -> {
-                log.debug("[%s] Execute: [%s] Receive result: %s".formatted(getRootId(), code, object));
+                log.debug("[{}] Execute: [{}] Receive result: {}", getRootId(), code, object);
                 handleDefaultResult(object, code);
             });
             promise.complete(code);
@@ -728,6 +741,18 @@ public class TelegramVerticle extends AbstractVerticle {
                     .compose(mainFileRecord -> {
                         if (mainFileRecord != null) {
                             statusData.put("type", mainFileRecord.type());
+                            if (!"thumbnail".equals(mainFileRecord.type())) {
+                                vertx.eventBus().publish(EventEnum.FILE_DOWNLOADED.address(), JsonObject.of(
+                                        "telegramId", mainFileRecord.telegramId(),
+                                        "uniqueId", mainFileRecord.uniqueId()));
+                            } else {
+                                // Lets the UI patch the rows showing this thumbnail instead of refetching every page.
+                                statusData.put("thumbnailFile", JsonObject.of(
+                                        "uniqueId", mainFileRecord.uniqueId(),
+                                        "mimeType", mainFileRecord.mimeType(),
+                                        "extra", StrUtil.isBlank(mainFileRecord.extra()) ? null : Json.decodeValue(mainFileRecord.extra())
+                                ));
+                            }
                         }
                         if (mainFileRecord != null && mainFileRecord.thumbnailUniqueId() != null) {
                             return FileRecordRetriever.getThumbnails(List.of(mainFileRecord))
@@ -882,33 +907,38 @@ public class TelegramVerticle extends AbstractVerticle {
                     }
 
                     log.debug("[%s] Reconciling %d files with 'downloading' status".formatted(getRootId(), fileRecords.size()));
-                    int[] reconciledCount = {0};
-
-                    fileRecords.forEach(fileRecord -> {
-                        client.execute(new TdApi.GetFile(fileRecord.id()))
-                                .onSuccess(file -> {
-                                    if (file.local != null && file.local.isDownloadingCompleted) {
-                                        log.info("[%s] Reconciliation: File completed but not updated in DB: %s".formatted(getRootId(), file.remote.uniqueId));
-                                        reconciledCount[0]++;
-
-                                        DataVerticle.fileRepository.updateDownloadStatus(
-                                                file.id,
-                                                file.remote.uniqueId,
-                                                file.local.path,
-                                                FileRecord.DownloadStatus.completed,
-                                                System.currentTimeMillis()
-                                        ).onSuccess(result -> {
-                                            sendFileStatusHttpEvent(file, result);
-                                            log.debug("[%s] Reconciliation fixed file status: %s".formatted(getRootId(), file.remote.uniqueId));
-                                        });
-                                    }
-                                })
-                                .onFailure(e -> log.trace("[%s] Failed to get file during reconciliation: %s - %s".formatted(getRootId(), fileRecord.uniqueId(), e.getMessage())));
-                    });
-
-                    if (reconciledCount[0] > 0) {
-                        log.info("[%s] Reconciliation completed: fixed %d stuck downloads".formatted(getRootId(), reconciledCount[0]));
-                    }
+                    fileRecords.forEach(fileRecord -> client.execute(new TdApi.GetFile(fileRecord.id()))
+                            .onSuccess(file -> {
+                                if (file.local != null && file.local.isDownloadingCompleted) {
+                                    log.info("[%s] Reconciliation: File completed but not updated in DB: %s".formatted(getRootId(), file.remote.uniqueId));
+                                    DataVerticle.fileRepository.updateDownloadStatus(
+                                            file.id,
+                                            file.remote.uniqueId,
+                                            file.local.path,
+                                            FileRecord.DownloadStatus.completed,
+                                            System.currentTimeMillis()
+                                    ).onSuccess(result -> sendFileStatusHttpEvent(file, result));
+                                } else if (file.local == null || !file.local.isDownloadingActive) {
+                                    // TDLib isn't downloading it (missed update, restart, dropped download): such rows
+                                    // used to sit in "downloading" forever, holding auto-download slots. Re-queue it,
+                                    // or mark it failed if the message/file is gone.
+                                    log.info("[%s] Reconciliation: resuming stalled download %s".formatted(getRootId(), file.remote.uniqueId));
+                                    client.execute(new TdApi.AddFileToDownloads(file.id, fileRecord.chatId(), fileRecord.messageId(), 32))
+                                            .onFailure(e -> {
+                                                log.warn("[%s] Reconciliation: cannot resume %s, marking error: %s"
+                                                        .formatted(getRootId(), file.remote.uniqueId, e.getMessage()));
+                                                downloadingFileIds.remove(file.id);
+                                                DataVerticle.fileRepository.updateDownloadStatus(file.id, file.remote.uniqueId, null,
+                                                                FileRecord.DownloadStatus.error, null)
+                                                        .onSuccess(result -> sendFileStatusHttpEvent(file, result));
+                                            });
+                                }
+                            })
+                            .onFailure(e -> {
+                                log.warn("[%s] Reconciliation: file %s is gone, marking error: %s".formatted(getRootId(), fileRecord.uniqueId(), e.getMessage()));
+                                DataVerticle.fileRepository.updateDownloadStatus(fileRecord.id(), fileRecord.uniqueId(), null,
+                                        FileRecord.DownloadStatus.error, null);
+                            }));
                 })
                 .onFailure(e -> log.error("[%s] Failed to get downloading files for reconciliation: %s".formatted(getRootId(), e.getMessage())));
     }
@@ -936,7 +966,7 @@ public class TelegramVerticle extends AbstractVerticle {
     }
 
     private void onAuthorizationStateUpdated(TdApi.AuthorizationState authorizationState) {
-        log.debug("[%s] Receive authorization state update: %s".formatted(getRootId(), authorizationState));
+        log.debug("[{}] Receive authorization state update: {}", getRootId(), authorizationState);
         this.lastAuthorizationState = authorizationState;
         switch (authorizationState.getConstructor()) {
             case TdApi.AuthorizationStateWaitTdlibParameters.CONSTRUCTOR:
@@ -951,7 +981,7 @@ public class TelegramVerticle extends AbstractVerticle {
                 request.systemLanguageCode = "en";
                 request.deviceModel = "Telegram Files";
                 request.applicationVersion = Start.VERSION;
-                log.trace("[%s] Send SetTdlibParameters: %s".formatted(getRootId(), request));
+                log.trace("[{}] Send SetTdlibParameters: {}", getRootId(), request);
 
                 client.execute(request).onSuccess(this::handleAuthorizationResult);
                 break;
@@ -1008,9 +1038,8 @@ public class TelegramVerticle extends AbstractVerticle {
                 authorized = false;
                 if (needDelete) {
                     File root = FileUtil.file(this.rootPath);
-                    if (root.exists()) {
-                        FileUtil.del(root);
-                    }
+                    vertx.executeBlocking(() -> root.exists() && FileUtil.del(root))
+                            .onFailure(e -> log.error("[%s] Failed to delete account files: %s".formatted(this.getRootId(), e.getMessage())));
                     if (getId() instanceof Long telegramId) {
                         DataVerticle.telegramRepository.delete(telegramId)
                                 .onFailure(e -> log.error("[%s] Failed to delete telegram record: %s".formatted(this.getRootId(), e.getMessage())));
@@ -1024,54 +1053,86 @@ public class TelegramVerticle extends AbstractVerticle {
     }
 
     private void onFileUpdated(TdApi.UpdateFile updateFile) {
-        log.trace("📃[%s] Receive file update: %s".formatted(getRootId(), updateFile));
         TdApi.File file = updateFile.file;
-        if (file != null) {
-            String localPath = null;
-            Long completionDate = null;
-            if (file.local != null && file.local.isDownloadingCompleted) {
-                localPath = file.local.path;
-                completionDate = System.currentTimeMillis();
-            }
-            String finalLocalPath = localPath;
-            Long finalCompletionDate = completionDate;
-            DataVerticle.fileRepository.getByUniqueId(file.remote.uniqueId)
-                    .onSuccess(fileRecord -> {
-                        FileRecord.DownloadStatus downloadStatus = TdApiHelp.getDownloadStatus(file);
+        if (file == null) {
+            return;
+        }
+        if (log.isTraceEnabled()) {
+            log.trace("📃[{}] Receive file update: {}", getRootId(), updateFile);
+        }
+        boolean completed = file.local != null && file.local.isDownloadingCompleted;
+        FileRecord.DownloadStatus downloadStatus = Objects.requireNonNullElse(TdApiHelp.getDownloadStatus(file),
+                completed ? FileRecord.DownloadStatus.completed : FileRecord.DownloadStatus.idle);
 
-                        if (fileRecord != null) {
-                            if (fileRecord.isDownloadStatus(FileRecord.DownloadStatus.completed) &&
-                                fileRecord.isTransferStatus(FileRecord.TransferStatus.completed) &&
-                                FileUtil.exist(fileRecord.localPath())) {
-                                return;
-                            }
-                            if (downloadStatus == null) {
-                                // Check if download actually completed even though getDownloadStatus returned null
-                                if (file.local != null && file.local.isDownloadingCompleted) {
-                                    log.debug("[%s] File download completed but getDownloadStatus returned null: %s".formatted(getRootId(), file.remote.uniqueId));
-                                    downloadStatus = FileRecord.DownloadStatus.completed;
-                                } else {
-                                    downloadStatus = FileRecord.DownloadStatus.idle;
-                                }
-                            }
-                            DataVerticle.fileRepository.updateDownloadStatus(file.id,
-                                            file.remote.uniqueId,
-                                            finalLocalPath,
-                                            downloadStatus,
-                                            finalCompletionDate)
-                                    .onSuccess(r -> sendFileStatusHttpEvent(file, r));
-                        }
-                    });
+        // A download fires many updates per second; once the database says "downloading" there is
+        // nothing to persist until the status changes.
+        if (downloadStatus != FileRecord.DownloadStatus.downloading) {
+            downloadingFileIds.remove(file.id);
+        }
+        if (downloadStatus != FileRecord.DownloadStatus.downloading || !downloadingFileIds.contains(file.id)) {
+            persistFileStatus(file, downloadStatus, completed);
+        }
 
-            if (completionDate != null || lastFileEventTime == 0 || System.currentTimeMillis() - lastFileEventTime > 1000) {
-                sendEvent(EventPayload.build(EventPayload.TYPE_FILE, updateFile));
-                lastFileEventTime = System.currentTimeMillis();
+        // Throttle per file: with one shared timestamp, concurrent downloads starved each other's progress.
+        long now = System.currentTimeMillis();
+        Long lastSent = lastFileEventTimes.get(file.id);
+        if (completed || lastSent == null || now - lastSent > 1000) {
+            sendEvent(EventPayload.build(EventPayload.TYPE_FILE, updateFile));
+            if (downloadStatus == FileRecord.DownloadStatus.downloading) {
+                lastFileEventTimes.put(file.id, now);
+            } else {
+                lastFileEventTimes.remove(file.id);
             }
         }
     }
 
+    private void persistFileStatus(TdApi.File file, FileRecord.DownloadStatus downloadStatus, boolean completed) {
+        DataVerticle.fileRepository.getByUniqueId(file.remote.uniqueId)
+                .onSuccess(fileRecord -> {
+                    if (fileRecord == null) {
+                        return;
+                    }
+                    if (fileRecord.isDownloadStatus(FileRecord.DownloadStatus.completed) &&
+                        fileRecord.isTransferStatus(FileRecord.TransferStatus.completed) &&
+                        FileUtil.exist(fileRecord.localPath())) {
+                        return;
+                    }
+                    // TDLib reports a paused download as merely inactive; keep the paused state we recorded.
+                    if (downloadStatus == FileRecord.DownloadStatus.idle
+                        && fileRecord.isDownloadStatus(FileRecord.DownloadStatus.paused)) {
+                        return;
+                    }
+                    if (downloadStatus == FileRecord.DownloadStatus.downloading) {
+                        downloadingFileIds.add(file.id);
+                    }
+                    DataVerticle.fileRepository.updateDownloadStatus(file.id,
+                                    file.remote.uniqueId,
+                                    completed ? file.local.path : null,
+                                    downloadStatus,
+                                    completed ? System.currentTimeMillis() : null)
+                            .onSuccess(r -> sendFileStatusHttpEvent(file, r));
+                });
+    }
+
+    private void onFileDownloadUpdated(TdApi.UpdateFileDownload update) {
+        if (!update.isPaused || update.completeDate != 0) {
+            return;
+        }
+        // Without this, paused files were stored as "idle": the paused counter stayed at 0 and
+        // auto-download picked them up again, silently resuming what the user had paused.
+        client.execute(new TdApi.GetFile(update.fileId))
+                .compose(file -> file.local != null && file.local.isDownloadingCompleted
+                        ? Future.succeededFuture()
+                        : DataVerticle.fileRepository.updateDownloadStatus(file.id, file.remote.uniqueId, null,
+                                        FileRecord.DownloadStatus.paused, null)
+                                .onSuccess(r -> sendFileStatusHttpEvent(file, r)))
+                .onFailure(e -> log.debug("[%s] Failed to record paused file %d: %s".formatted(getRootId(), update.fileId, e.getMessage())));
+    }
+
     private void onFileDownloadsUpdated(TdApi.UpdateFileDownloads updateFileDownloads) {
-        log.trace("[%s] Receive file downloads update: %s".formatted(getRootId(), updateFileDownloads));
+        if (log.isTraceEnabled()) {
+            log.trace("[{}] Receive file downloads update: {}", getRootId(), updateFileDownloads);
+        }
         avgSpeed.update(updateFileDownloads.downloadedSize, System.currentTimeMillis());
         if (lastFileDownloadEventTime == 0 || System.currentTimeMillis() - lastFileDownloadEventTime > 1000) {
             sendEvent(EventPayload.build(EventPayload.TYPE_FILE_DOWNLOAD, updateFileDownloads));
@@ -1080,9 +1141,10 @@ public class TelegramVerticle extends AbstractVerticle {
     }
 
     private void onMessageReceived(TdApi.Message message) {
-        log.trace("[%s] Receive message: %s".formatted(getRootId(), message));
+        if (log.isTraceEnabled()) {
+            log.trace("[{}] Receive message: {}", getRootId(), message);
+        }
         if (this.telegramRecord == null) {
-            log.trace("[%s] Telegram record is null, can't handle message".formatted(getRootId()));
             return;
         }
         vertx.eventBus().publish(EventEnum.MESSAGE_RECEIVED.address(), JsonObject.of()
@@ -1126,11 +1188,8 @@ public class TelegramVerticle extends AbstractVerticle {
                 })
                 .compose(r -> {
                     sendFileStatusHttpEvent(file, r);
-                    if (r == null || r.isEmpty()) {
-                        return Future.failedFuture("File is downloaded completed, but update status failed");
-                    } else {
-                        return Future.failedFuture("File is already downloaded successfully");
-                    }
+                    // Idempotent: an empty update means the row already holds the completed state.
+                    return Future.succeededFuture();
                 });
     }
 }

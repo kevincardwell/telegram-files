@@ -4,7 +4,6 @@ import cn.hutool.core.util.StrUtil;
 import cn.hutool.log.Log;
 import cn.hutool.log.LogFactory;
 import org.drinkless.tdlib.TdApi;
-import org.jooq.lambda.tuple.Tuple;
 
 import java.util.List;
 import java.util.NavigableSet;
@@ -21,6 +20,8 @@ public class TelegramChats {
 
     private final ConcurrentMap<Long, TdApi.Chat> chats = new ConcurrentHashMap<>();
 
+    private final Object listLock = new Object();
+
     private final NavigableSet<OrderedChat> mainChatList = new TreeSet<>();
 
     private final NavigableSet<OrderedChat> archivedChatList = new TreeSet<>();
@@ -34,8 +35,12 @@ public class TelegramChats {
     }
 
     public List<TdApi.Chat> getChatList(Long activatedChatId, String query, int limit, boolean archived) {
-        List<TdApi.Chat> chatList = (archived ? archivedChatList : mainChatList).stream()
-                .map(OrderedChat::chatId)
+        List<Long> chatIds;
+        // HTTP handlers read while TDLib updates reorder the sets on the account's context.
+        synchronized (listLock) {
+            chatIds = (archived ? archivedChatList : mainChatList).stream().map(OrderedChat::chatId).toList();
+        }
+        List<TdApi.Chat> chatList = chatIds.stream()
                 .map(chats::get)
                 .filter(Objects::nonNull)
                 .filter(chat -> StrUtil.isBlank(query) || chat.title.contains(query))
@@ -57,7 +62,7 @@ public class TelegramChats {
     }
 
     public void loadMainChatList() {
-        synchronized (mainChatList) {
+        synchronized (listLock) {
             if (!haveFullMainChatList) {
                 // send LoadChats request if there are some unknown chats and have not enough known chats
                 client.execute(new TdApi.LoadChats(new TdApi.ChatListMain(), 100))
@@ -67,7 +72,7 @@ public class TelegramChats {
                         })
                         .onFailure(error -> {
                             if (((TelegramRunException) error).getError().code == 404) {
-                                synchronized (mainChatList) {
+                                synchronized (listLock) {
                                     haveFullMainChatList = true;
                                     log.debug("Main chat list is loaded, size: %d".formatted(mainChatList.size()));
                                 }
@@ -78,7 +83,7 @@ public class TelegramChats {
     }
 
     public void loadArchivedChatList() {
-        synchronized (archivedChatList) {
+        synchronized (listLock) {
             if (!haveFullArchivedChatList) {
                 // send LoadChats request if there are some unknown chats and have not enough known chats
                 client.execute(new TdApi.LoadChats(new TdApi.ChatListArchive(), 100))
@@ -88,7 +93,7 @@ public class TelegramChats {
                         })
                         .onFailure(error -> {
                             if (((TelegramRunException) error).getError().code == 404) {
-                                synchronized (archivedChatList) {
+                                synchronized (listLock) {
                                     haveFullArchivedChatList = true;
                                     log.debug("Archived chat list is loaded, size: %d".formatted(archivedChatList.size()));
                                 }
@@ -180,7 +185,7 @@ public class TelegramChats {
     }
 
     private void setChatPositions(TdApi.Chat chat, TdApi.ChatPosition[] positions) {
-        synchronized (Tuple.tuple(mainChatList, archivedChatList)) {
+        synchronized (listLock) {
             synchronized (chat) {
                 for (TdApi.ChatPosition position : chat.positions) {
                     if (position.list.getConstructor() == TdApi.ChatListMain.CONSTRUCTOR) {

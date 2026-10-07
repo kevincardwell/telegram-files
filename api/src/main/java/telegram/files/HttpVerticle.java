@@ -43,13 +43,13 @@ public class HttpVerticle extends AbstractVerticle {
 
     private static final Log log = LogFactory.get();
 
-    // session id -> ws handler id
-    private static final Map<String, String> clients = new ConcurrentHashMap<>();
+    // ws text handler id -> telegram id the socket follows ("" = all accounts). Per socket, not per session:
+    // with one slot per session cookie a second tab stole the first one's events, and a late close of the
+    // previous socket unregistered its replacement.
+    private static final Map<String, String> sockets = new ConcurrentHashMap<>();
 
     // session id -> telegram verticle
     private final Map<String, TelegramVerticle> sessionTelegramVerticles = new ConcurrentHashMap<>();
-
-    private final List<String> unboundClients = new ArrayList<>();
 
     private final FileRouteHandler fileRouteHandler = new FileRouteHandler();
 
@@ -57,6 +57,8 @@ public class HttpVerticle extends AbstractVerticle {
 
     @Override
     public void start(Promise<Void> startPromise) {
+        // Automation scan cursors were only saved on a clean shutdown; a crash lost all progress.
+        vertx.setPeriodic(60_000, _ -> AutomationsHolder.INSTANCE.saveAutoRecords());
         initHttpServer()
                 .compose(_ -> initTelegramVerticles())
                 .compose(_ -> AutomationsHolder.INSTANCE.init())
@@ -111,7 +113,8 @@ public class HttpVerticle extends AbstractVerticle {
         }
         router.route()
                 .handler(sessionHandler)
-                .handler(BodyHandler.create());
+                // No upload endpoints: don't spool multipart bodies to ./file-uploads, cap JSON bodies.
+                .handler(BodyHandler.create(false).setBodyLimit(8 * 1024 * 1024));
 
         if (!Config.isProd()) {
             router.route()
@@ -216,30 +219,18 @@ public class HttpVerticle extends AbstractVerticle {
 
     private Future<Void> initEventConsumer() {
         vertx.eventBus().consumer(EventEnum.TELEGRAM_EVENT.address(), message -> {
-            log.debug("Received telegram event: %s".formatted(message.body()));
+            if (sockets.isEmpty()) {
+                return;
+            }
             JsonObject jsonObject = (JsonObject) message.body();
+            if (log.isTraceEnabled()) {
+                log.trace("Received telegram event: {}", jsonObject);
+            }
             String telegramId = jsonObject.getString("telegramId");
-            EventPayload payload = jsonObject.getJsonObject("payload").mapTo(EventPayload.class);
-
-            Set<String> sentSessionIds = new HashSet<>();
-            sessionTelegramVerticles.entrySet().stream()
-                    .filter(e -> Objects.equals(Convert.toStr(e.getValue().getId()), telegramId))
-                    .map(Map.Entry::getKey)
-                    .forEach(sessionId -> {
-                        String wsHandlerId = clients.get(sessionId);
-                        if (StrUtil.isNotBlank(wsHandlerId)) {
-                            vertx.eventBus().send(wsHandlerId, Json.encode(payload));
-                        }
-                        sentSessionIds.add(sessionId);
-                    });
-
-            unboundClients.forEach(sessionId -> {
-                if (sentSessionIds.contains(sessionId)) {
-                    return;
-                }
-                String wsHandlerId = clients.get(sessionId);
-                if (StrUtil.isNotBlank(wsHandlerId)) {
-                    vertx.eventBus().send(wsHandlerId, Json.encode(payload));
+            String encoded = jsonObject.getJsonObject("payload").encode();
+            sockets.forEach((wsHandlerId, followed) -> {
+                if (followed.isEmpty() || followed.equals(telegramId)) {
+                    vertx.eventBus().send(wsHandlerId, encoded);
                 }
             });
         });
@@ -257,27 +248,25 @@ public class HttpVerticle extends AbstractVerticle {
         ctx.request().toWebSocket()
                 .onSuccess(ws -> {
                     log.debug("Upgraded to WebSocket. SessionId: %s".formatted(sessionId));
-                    clients.put(sessionId, ws.textHandlerID());
+                    String handlerId = ws.textHandlerID();
                     if (!handleTelegramChange(sessionId, telegramId)) {
                         log.debug("Failed to change telegram verticle. SessionId: %s".formatted(sessionId));
                     }
-                    if (StrUtil.isBlank(telegramId)) {
-                        unboundClients.add(sessionId);
-                    } else {
-                        unboundClients.remove(sessionId);
+                    if (handlerId != null) {
+                        sockets.put(handlerId, StrUtil.nullToEmpty(telegramId));
                     }
 
                     long timerId = vertx.setPeriodic(30000, _ -> {
                         if (!ws.isClosed()) {
                             ws.writePing(Buffer.buffer("👀"));
-                            log.trace("Ping Client: %s".formatted(sessionId));
                         }
                     });
 
-                    ws.exceptionHandler(throwable -> log.error("WebSocket error: %s".formatted(throwable.getMessage())));
+                    ws.exceptionHandler(throwable -> log.debug("WebSocket error: %s".formatted(throwable.getMessage())));
                     ws.closeHandler(_ -> {
-                        clients.remove(sessionId);
-                        sessionTelegramVerticles.remove(sessionId);
+                        if (handlerId != null) {
+                            sockets.remove(handlerId);
+                        }
                         vertx.cancelTimer(timerId);
                         log.debug("WebSocket closed. SessionId: %s".formatted(sessionId));
                     });
@@ -718,7 +707,7 @@ public class HttpVerticle extends AbstractVerticle {
                         .flatMap(entry -> {
                             TelegramVerticle telegramVerticle = TelegramVerticles.getOrElseThrow(entry.getKey());
 
-                            return files.stream()
+                            return entry.getValue().stream()
                                     .map(f -> {
                                         JsonObject file = (JsonObject) f;
                                         return handler.apply(telegramVerticle, file);

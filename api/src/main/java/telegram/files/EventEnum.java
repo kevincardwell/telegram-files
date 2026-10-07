@@ -34,6 +34,12 @@ public enum EventEnum {
 
     /**
      * suffix = null <br>
+     * body = JSONObject with "telegramId", "uniqueId" of a (non-thumbnail) file whose download completed
+     */
+    FILE_DOWNLOADED,
+
+    /**
+     * suffix = null <br>
      * body = JSONObject with "success", "message"
      */
     MAINTAIN,
