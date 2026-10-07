@@ -82,6 +82,13 @@ export default function AutomationDialog() {
           setOpen(false);
         }, 1000);
       },
+      onError: (error: Error) => {
+        toast({
+          variant: "error",
+          title: "Failed to update auto settings",
+          description: error.message,
+        });
+      },
     },
   );
 
@@ -89,13 +96,19 @@ export default function AutomationDialog() {
     leading: true,
   });
 
+  const formVisible = open && (editMode || !chat?.auto);
   useEffect(() => {
+    // Don't clobber in-progress edits: SWR revalidation (e.g. on window refocus) replaces `chat`
+    // while the form is open, which used to reset the draft and silently lose rule edits on save.
+    if (formVisible) {
+      return;
+    }
     if (chat?.auto) {
       setAuto(chat.auto);
     } else {
       setAuto(DEFAULT_AUTO);
     }
-  }, [chat]);
+  }, [chat, formVisible]);
 
   if (isLoading) {
     return (
