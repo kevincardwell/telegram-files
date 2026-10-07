@@ -11,6 +11,7 @@ import telegram.files.repository.SettingKey;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.function.Consumer;
+import java.util.function.Supplier;
 
 public class AutomationsHolder {
     private final Log log = LogFactory.get();
@@ -20,6 +21,8 @@ public class AutomationsHolder {
     private final List<Consumer<List<SettingAutoRecords.Automation>>> onRemoveListeners = new ArrayList<>();
 
     private volatile boolean initialized = false;
+
+    private Future<?> writes = Future.succeededFuture();
 
     public static final AutomationsHolder INSTANCE = new AutomationsHolder();
 
@@ -89,15 +92,42 @@ public class AutomationsHolder {
         }
     }
 
+    /**
+     * Runs read-modify-write operations on the automation setting one at a time: the periodic progress save
+     * and a user's edit used to interleave and drop (or resurrect) each other's changes.
+     */
+    public synchronized <T> Future<T> serialized(Supplier<Future<T>> operation) {
+        Future<T> next = writes.transform(_ -> operation.get());
+        writes = next.transform(_ -> Future.succeededFuture());
+        return next;
+    }
+
+    /**
+     * Persists scan progress (cursors, completion state) onto the stored automations. Never adds entries:
+     * the user's settings are the source of truth for which automations exist and how they're configured.
+     */
     public Future<Void> saveAutoRecords() {
-        return DataVerticle.settingRepository.<SettingAutoRecords>getByKey(SettingKey.automation)
-                .compose(settingAutoRecords -> {
-                    if (settingAutoRecords == null) {
-                        settingAutoRecords = new SettingAutoRecords();
+        return serialized(() -> DataVerticle.settingRepository.<SettingAutoRecords>getByKey(SettingKey.automation)
+                .compose(stored -> {
+                    if (stored == null) {
+                        return Future.succeededFuture();
                     }
-                    AUTO_RECORDS.automations.forEach(settingAutoRecords::add);
-                    return DataVerticle.settingRepository.createOrUpdate(SettingKey.automation.name(), Json.encode(settingAutoRecords));
-                })
+                    for (SettingAutoRecords.Automation live : AUTO_RECORDS.automations) {
+                        SettingAutoRecords.Automation saved = stored.getItem(live.telegramId, live.chatId);
+                        if (saved == null) {
+                            continue;
+                        }
+                        saved.state = live.state;
+                        if (saved.preload != null && live.preload != null) {
+                            saved.preload.nextFromMessageId = live.preload.nextFromMessageId;
+                        }
+                        if (saved.download != null && live.download != null) {
+                            saved.download.nextFileType = live.download.nextFileType;
+                            saved.download.nextFromMessageId = live.download.nextFromMessageId;
+                        }
+                    }
+                    return DataVerticle.settingRepository.createOrUpdate(SettingKey.automation.name(), Json.encode(stored));
+                }))
                 .onFailure(e -> log.error("Save auto records failed!", e))
                 .mapEmpty();
     }

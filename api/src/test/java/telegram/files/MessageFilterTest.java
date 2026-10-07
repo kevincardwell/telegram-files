@@ -54,8 +54,11 @@ class MessageFilterTest {
                                                    ((TdApi.MessageText) m.content).text.text.contains("Hello")));
     }
 
+    private static final String PWNED = System.getProperty("java.io.tmpdir") + "/tf-sandbox-pwned";
+
     @Test
     void testSandboxBlocksDangerousCalls() {
+        new java.io.File(PWNED).delete();
         // Each of these reached reflection, deserialization, process execution or the filesystem upstream.
         for (String expr : List.of(
                 "class:loadClass('java.lang.Runtime') != null",
@@ -63,9 +66,13 @@ class MessageFilterTest {
                 "zip:zip('/tmp') != null",
                 "net:getLocalhostStr() != null",
                 "str:contains(content.text.text, 'Hello') && ''.class.forName('java.lang.Runtime') != null",
-                "new('cn.hutool.core.util.RuntimeUtil') != null")) {
+                "new('cn.hutool.core.util.RuntimeUtil') != null",
+                "new('java.io.RandomAccessFile', '" + PWNED + "', 'rw').writeBytes('x') == null",
+                "new('java.io.FileOutputStream', '" + PWNED + "') != null",
+                "new('java.util.logging.FileHandler', '" + PWNED + "') != null")) {
             assertTrue(MessageFilter.filter(messages, expr).isEmpty(), expr);
         }
+        assertFalse(new java.io.File(PWNED).exists(), "an expression wrote a file");
         // ...while the documented helpers keep working.
         assertEquals(2, MessageFilter.filter(messages, "re:isMatch('.*Hello.*', content.text.text)").size());
     }

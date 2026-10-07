@@ -69,6 +69,10 @@ public class TelegramVerticle extends AbstractVerticle {
     // files the database already records as downloading: their progress ticks skip the database
     private final Set<Integer> downloadingFileIds = new HashSet<>();
 
+    // files TDLib reported paused (updateFileDownload). Kept in update order, so a racing database write
+    // of "idle"/"downloading" can't undo a pause.
+    private final Set<Integer> pausedFileIds = new HashSet<>();
+
     public TelegramVerticle(String rootPath) {
         this.rootPath = rootPath;
     }
@@ -349,8 +353,16 @@ public class TelegramVerticle extends AbstractVerticle {
                                 }
                                 return Future.succeededFuture();
                             })
-                            .compose(ignore -> client.execute(new TdApi.AddFileToDownloads(fileId, chatId, messageId, 32)))
+                            // Record "downloading" before TDLib starts, so auto-download's slot count (a count of
+                            // downloading rows) is right immediately instead of after the first progress update.
+                            .compose(ignore -> DataVerticle.fileRepository.updateDownloadStatus(fileId, fileRecord.uniqueId(), null,
+                                    FileRecord.DownloadStatus.downloading, null))
+                            .compose(ignore -> client.execute(new TdApi.AddFileToDownloads(fileId, chatId, messageId, 32))
+                                    .recover(e -> DataVerticle.fileRepository.updateDownloadStatus(fileId, fileRecord.uniqueId(), null,
+                                                    FileRecord.DownloadStatus.idle, null)
+                                            .transform(_ -> Future.failedFuture(e))))
                             .onSuccess(ignore -> {
+                                forgetPaused(fileId);
                                 sendEvent(EventPayload.build(EventPayload.TYPE_FILE_STATUS, new JsonObject()
                                         .put("fileId", fileId)
                                         .put("uniqueId", fileRecord.uniqueId())
@@ -453,6 +465,7 @@ public class TelegramVerticle extends AbstractVerticle {
                 })
                 .compose(file -> client.execute(new TdApi.DeleteFile(fileId)).map(file))
                 .compose(file -> DataVerticle.fileRepository.deleteByUniqueId(file.remote.uniqueId).map(file))
+                .onSuccess(file -> forgetPaused(fileId))
                 .onSuccess(file ->
                         sendEvent(EventPayload.build(EventPayload.TYPE_FILE_STATUS, new JsonObject()
                                 .put("fileId", fileId)
@@ -490,6 +503,11 @@ public class TelegramVerticle extends AbstractVerticle {
                     }
 
                     return client.execute(new TdApi.ToggleDownloadIsPaused(fileId, isPaused));
+                })
+                .onSuccess(_ -> {
+                    if (!isPaused) {
+                        forgetPaused(fileId);
+                    }
                 })
                 .mapEmpty();
     }
@@ -535,7 +553,7 @@ public class TelegramVerticle extends AbstractVerticle {
     }
 
     public Future<Void> updateAutoSettings(Long chatId, JsonObject params) {
-        return DataVerticle.settingRepository.<SettingAutoRecords>getByKey(SettingKey.automation)
+        return AutomationsHolder.INSTANCE.serialized(() -> DataVerticle.settingRepository.<SettingAutoRecords>getByKey(SettingKey.automation)
                 .compose(settingAutoRecords -> {
                     if (settingAutoRecords == null) {
                         settingAutoRecords = new SettingAutoRecords();
@@ -558,7 +576,7 @@ public class TelegramVerticle extends AbstractVerticle {
 
                     return DataVerticle.settingRepository.createOrUpdate(SettingKey.automation.name(), Json.encode(settingAutoRecords))
                             .onSuccess(r -> vertx.eventBus().publish(EventEnum.AUTO_DOWNLOAD_UPDATE.name(), r.value()));
-                })
+                }))
                 .mapEmpty();
     }
 
@@ -907,7 +925,7 @@ public class TelegramVerticle extends AbstractVerticle {
                     }
 
                     log.debug("[%s] Reconciling %d files with 'downloading' status".formatted(getRootId(), fileRecords.size()));
-                    fileRecords.forEach(fileRecord -> client.execute(new TdApi.GetFile(fileRecord.id()))
+                    fileRecords.forEach(fileRecord -> resolveFile(fileRecord)
                             .onSuccess(file -> {
                                 if (file.local != null && file.local.isDownloadingCompleted) {
                                     log.info("[%s] Reconciliation: File completed but not updated in DB: %s".formatted(getRootId(), file.remote.uniqueId));
@@ -918,29 +936,61 @@ public class TelegramVerticle extends AbstractVerticle {
                                             FileRecord.DownloadStatus.completed,
                                             System.currentTimeMillis()
                                     ).onSuccess(result -> sendFileStatusHttpEvent(file, result));
+                                } else if (pausedFileIds.contains(file.id)) {
+                                    DataVerticle.fileRepository.updateDownloadStatus(file.id, file.remote.uniqueId, null,
+                                            FileRecord.DownloadStatus.paused, null);
                                 } else if (file.local == null || !file.local.isDownloadingActive) {
                                     // TDLib isn't downloading it (missed update, restart, dropped download): such rows
-                                    // used to sit in "downloading" forever, holding auto-download slots. Re-queue it,
-                                    // or mark it failed if the message/file is gone.
+                                    // used to sit in "downloading" forever, holding auto-download slots. Re-queue it.
                                     log.info("[%s] Reconciliation: resuming stalled download %s".formatted(getRootId(), file.remote.uniqueId));
                                     client.execute(new TdApi.AddFileToDownloads(file.id, fileRecord.chatId(), fileRecord.messageId(), 32))
-                                            .onFailure(e -> {
-                                                log.warn("[%s] Reconciliation: cannot resume %s, marking error: %s"
-                                                        .formatted(getRootId(), file.remote.uniqueId, e.getMessage()));
-                                                downloadingFileIds.remove(file.id);
-                                                DataVerticle.fileRepository.updateDownloadStatus(file.id, file.remote.uniqueId, null,
-                                                                FileRecord.DownloadStatus.error, null)
-                                                        .onSuccess(result -> sendFileStatusHttpEvent(file, result));
-                                            });
+                                            .onFailure(e -> markDownloadError(fileRecord, e.getMessage()));
                                 }
                             })
-                            .onFailure(e -> {
-                                log.warn("[%s] Reconciliation: file %s is gone, marking error: %s".formatted(getRootId(), fileRecord.uniqueId(), e.getMessage()));
-                                DataVerticle.fileRepository.updateDownloadStatus(fileRecord.id(), fileRecord.uniqueId(), null,
-                                        FileRecord.DownloadStatus.error, null);
-                            }));
+                            .onFailure(e -> markDownloadError(fileRecord, e.getMessage())));
                 })
                 .onFailure(e -> log.error("[%s] Failed to get downloading files for reconciliation: %s".formatted(getRootId(), e.getMessage())));
+    }
+
+    /**
+     * The row's current TDLib file. Stored ids may belong to a previous TDLib session (ids change across
+     * restarts), so fall back to the message and refresh the stored id. Fails only if the file is gone.
+     */
+    private Future<TdApi.File> resolveFile(FileRecord fileRecord) {
+        return client.execute(new TdApi.GetFile(fileRecord.id()))
+                .otherwise((TdApi.File) null)
+                .compose(file -> {
+                    if (file != null && file.remote != null && fileRecord.uniqueId().equals(file.remote.uniqueId)) {
+                        return Future.succeededFuture(file);
+                    }
+                    return client.execute(new TdApi.GetMessage(fileRecord.chatId(), fileRecord.messageId()))
+                            .compose(message -> TdApiHelp.getFileHandler(message)
+                                    .map(TdApiHelp.FileHandler::getFile)
+                                    .filter(f -> f.remote != null && fileRecord.uniqueId().equals(f.remote.uniqueId))
+                                    .map(f -> DataVerticle.fileRepository.updateFileId(f.id, f.remote.uniqueId).map(f))
+                                    .orElseGet(() -> Future.failedFuture("message no longer contains the file")));
+                });
+    }
+
+    /**
+     * Callable from any context; the set is confined to this verticle's.
+     */
+    private void forgetPaused(int fileId) {
+        context.runOnContext(_ -> pausedFileIds.remove(fileId));
+    }
+
+    private void markDownloadError(FileRecord fileRecord, String reason) {
+        log.warn("[%s] Reconciliation: cannot resume %s, marking error: %s".formatted(getRootId(), fileRecord.uniqueId(), reason));
+        DataVerticle.fileRepository.updateDownloadStatus(fileRecord.id(), fileRecord.uniqueId(), null,
+                        FileRecord.DownloadStatus.error, null)
+                .onSuccess(result -> {
+                    if (result != null && !result.isEmpty()) {
+                        sendEvent(EventPayload.build(EventPayload.TYPE_FILE_STATUS, new JsonObject()
+                                .put("fileId", fileRecord.id())
+                                .put("uniqueId", fileRecord.uniqueId())
+                                .put("downloadStatus", FileRecord.DownloadStatus.error)));
+                    }
+                });
     }
 
     private void onConnectionStateUpdated(TdApi.ConnectionState connectionState) {
@@ -1063,6 +1113,12 @@ public class TelegramVerticle extends AbstractVerticle {
         boolean completed = file.local != null && file.local.isDownloadingCompleted;
         FileRecord.DownloadStatus downloadStatus = Objects.requireNonNullElse(TdApiHelp.getDownloadStatus(file),
                 completed ? FileRecord.DownloadStatus.completed : FileRecord.DownloadStatus.idle);
+        if (completed) {
+            pausedFileIds.remove(file.id);
+        } else if (downloadStatus == FileRecord.DownloadStatus.idle && pausedFileIds.contains(file.id)) {
+            // TDLib reports a paused download as merely inactive.
+            downloadStatus = FileRecord.DownloadStatus.paused;
+        }
 
         // A download fires many updates per second; once the database says "downloading" there is
         // nothing to persist until the status changes.
@@ -1076,7 +1132,7 @@ public class TelegramVerticle extends AbstractVerticle {
         // Throttle per file: with one shared timestamp, concurrent downloads starved each other's progress.
         long now = System.currentTimeMillis();
         Long lastSent = lastFileEventTimes.get(file.id);
-        if (completed || lastSent == null || now - lastSent > 1000) {
+        if (downloadStatus != FileRecord.DownloadStatus.downloading || lastSent == null || now - lastSent > 1000) {
             sendEvent(EventPayload.build(EventPayload.TYPE_FILE, updateFile));
             if (downloadStatus == FileRecord.DownloadStatus.downloading) {
                 lastFileEventTimes.put(file.id, now);
@@ -1097,18 +1153,25 @@ public class TelegramVerticle extends AbstractVerticle {
                         FileUtil.exist(fileRecord.localPath())) {
                         return;
                     }
-                    // TDLib reports a paused download as merely inactive; keep the paused state we recorded.
-                    if (downloadStatus == FileRecord.DownloadStatus.idle
-                        && fileRecord.isDownloadStatus(FileRecord.DownloadStatus.paused)) {
+                    // Decided now, not when the update arrived: a pause may have been reported meanwhile.
+                    FileRecord.DownloadStatus status = downloadStatus;
+                    boolean paused = pausedFileIds.contains(file.id);
+                    if (!completed && paused) {
+                        status = FileRecord.DownloadStatus.paused;
+                    } else if (status == FileRecord.DownloadStatus.idle && fileRecord.isDownloadStatus(FileRecord.DownloadStatus.paused)) {
                         return;
                     }
-                    if (downloadStatus == FileRecord.DownloadStatus.downloading) {
+                    if (fileRecord.id() != file.id) {
+                        // TDLib file ids change between sessions; keep the stored one current.
+                        DataVerticle.fileRepository.updateFileId(file.id, file.remote.uniqueId);
+                    }
+                    if (status == FileRecord.DownloadStatus.downloading) {
                         downloadingFileIds.add(file.id);
                     }
                     DataVerticle.fileRepository.updateDownloadStatus(file.id,
                                     file.remote.uniqueId,
                                     completed ? file.local.path : null,
-                                    downloadStatus,
+                                    status,
                                     completed ? System.currentTimeMillis() : null)
                             .onSuccess(r -> sendFileStatusHttpEvent(file, r));
                 });
@@ -1116,8 +1179,13 @@ public class TelegramVerticle extends AbstractVerticle {
 
     private void onFileDownloadUpdated(TdApi.UpdateFileDownload update) {
         if (!update.isPaused || update.completeDate != 0) {
+            pausedFileIds.remove(update.fileId);
             return;
         }
+        if (!pausedFileIds.add(update.fileId)) {
+            return;
+        }
+        downloadingFileIds.remove(update.fileId);
         // Without this, paused files were stored as "idle": the paused counter stayed at 0 and
         // auto-download picked them up again, silently resuming what the user had paused.
         client.execute(new TdApi.GetFile(update.fileId))

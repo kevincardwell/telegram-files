@@ -12,6 +12,7 @@ import cn.hutool.log.LogFactory;
 import org.apache.commons.jexl3.JexlBuilder;
 import org.apache.commons.jexl3.JexlEngine;
 import org.apache.commons.jexl3.JexlExpression;
+import org.apache.commons.jexl3.JexlFeatures;
 import org.apache.commons.jexl3.MapContext;
 import org.apache.commons.jexl3.introspection.JexlPermissions;
 import org.drinkless.tdlib.TdApi;
@@ -130,37 +131,50 @@ public class MessageFilter {
         return clazz.getName().startsWith("cn.hutool.");
     }
 
+    // Allowlist, not denylist: JEXL's RESTRICTED still allows java.io (RandomAccessFile, FileOutputStream),
+    // java.util.logging and java.util.zip, i.e. arbitrary file writes. Expressions only need values and
+    // collections; message fields arrive as Maps and the file as a FileRecord.
+    private static final Set<String> SAFE_PACKAGES = Set.of(
+            "java.lang", "java.util", "java.math", "java.time", "java.text", "telegram.files.repository");
+
+    private static boolean isSafe(Class<?> clazz) {
+        return isHutool(clazz) ? HUTOOL_ALLOWED.contains(clazz) : SAFE_PACKAGES.contains(clazz.getPackageName());
+    }
+
     private static final JexlPermissions PERMISSIONS = new JexlPermissions.Delegate(
             JexlPermissions.RESTRICTED.compose("telegram.files.repository.*")) {
         @Override
         public boolean allow(Package pack) {
-            return pack.getName().startsWith("cn.hutool.") || super.allow(pack);
+            return pack.getName().startsWith("cn.hutool.") || SAFE_PACKAGES.contains(pack.getName()) && super.allow(pack);
         }
 
         @Override
         public boolean allow(Class<?> clazz) {
-            return isHutool(clazz) ? HUTOOL_ALLOWED.contains(clazz) : super.allow(clazz);
+            return isSafe(clazz) && (isHutool(clazz) || super.allow(clazz));
         }
 
         @Override
         public boolean allow(Method method) {
-            return isHutool(method.getDeclaringClass()) ? HUTOOL_ALLOWED.contains(method.getDeclaringClass()) : super.allow(method);
+            Class<?> owner = method.getDeclaringClass();
+            return isSafe(owner) && (isHutool(owner) || super.allow(method));
         }
 
         @Override
         public boolean allow(Constructor<?> ctor) {
-            return !isHutool(ctor.getDeclaringClass()) && super.allow(ctor);
+            return false;
         }
 
         @Override
         public boolean allow(Field field) {
-            return !isHutool(field.getDeclaringClass()) && super.allow(field);
+            Class<?> owner = field.getDeclaringClass();
+            return !isHutool(owner) && isSafe(owner) && super.allow(field);
         }
     };
 
     private static final JexlEngine JEXL_ENGINE = new JexlBuilder()
             .strict(true)
             .silent(false)
+            .features(new JexlFeatures().newInstance(false))
             .permissions(PERMISSIONS)
             .namespaces(NAMESPACES)
             .create();
@@ -180,7 +194,14 @@ public class MessageFilter {
         if (StrUtil.isBlank(exprStr)) {
             return _ -> true;
         }
-        JexlExpression expression = getExpression(exprStr);
+        JexlExpression expression;
+        try {
+            expression = getExpression(exprStr);
+        } catch (Exception e) {
+            // An invalid (or disallowed) expression matches nothing rather than breaking the scan.
+            log.warn("Invalid filter expression: {}, error: {}", exprStr, e.getMessage());
+            return _ -> false;
+        }
         return message -> {
             Map<String, Object> map = BeanUtil.beanToMap(message, new LinkedHashMap<>(16, 1), BEAN_TO_MAP_OPTIONS);
             TdApiHelp.getFileHandler(message).ifPresent(fileHandler -> {

@@ -25,6 +25,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedDeque;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
 import java.util.function.Predicate;
 import java.util.stream.IntStream;
@@ -57,6 +58,10 @@ public class AutoDownloadVerticle extends AbstractVerticle {
     private final Map<Long, Deque<WaitingScanThread>> waitingScanThreads = new ConcurrentHashMap<>();
 
     private final Set<Long> refillScheduled = ConcurrentHashMap.newKeySet();
+
+    // telegramId -> downloads handed to startDownload that haven't finished starting. They aren't counted as
+    // "downloading" rows yet, and concurrent scans/completions would otherwise overshoot the limit.
+    private final Map<Long, AtomicInteger> starting = new ConcurrentHashMap<>();
 
     private boolean scanning = false;
 
@@ -406,7 +411,8 @@ public class AutoDownloadVerticle extends AbstractVerticle {
 
     private int getSurplusSize(long telegramId) {
         Integer downloading = Future.await(DataVerticle.fileRepository.countByStatus(telegramId, FileRecord.DownloadStatus.downloading));
-        return downloading == null ? limit : Math.max(0, limit - downloading);
+        int inFlight = starting.computeIfAbsent(telegramId, _ -> new AtomicInteger()).get();
+        return Math.max(0, limit - (downloading == null ? 0 : downloading) - inFlight);
     }
 
     private boolean isDownloadCommentEnabled(SettingAutoRecords.Automation auto) {
@@ -466,11 +472,14 @@ public class AutoDownloadVerticle extends AbstractVerticle {
         List<MessageWrapper> downloadMessages = IntStream.range(0, Math.min(surplusSize, messages.size()))
                 .mapToObj(_ -> messages.poll())
                 .toList();
+        AtomicInteger inFlight = starting.computeIfAbsent(telegramId, _ -> new AtomicInteger());
         downloadMessages.forEach(messageWrapper -> {
             TdApi.Message message = messageWrapper.message;
             Integer fileId = TdApiHelp.getFileId(message);
             log.debug("Start download file: %s".formatted(fileId));
+            inFlight.incrementAndGet();
             telegramVerticle.startDownload(message.chatId, message.id, fileId)
+                    .onComplete(_ -> inFlight.decrementAndGet())
                     .onSuccess(fileRecord -> {
                         log.info("Start download file success! ChatId: %d MessageId:%d FileId:%d"
                                 .formatted(message.chatId, message.id, fileId));

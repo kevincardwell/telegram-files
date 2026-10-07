@@ -79,19 +79,16 @@ public class TransferVerticle extends AbstractVerticle {
     @Override
     public void stop(Promise<Void> stopPromise) {
         isStopped = true;
-        if (beingTransferred != null) {
-            log.info("Wait for transfer to complete, file: %s".formatted(beingTransferred.getTransferRecord().uniqueId()));
-            while (beingTransferred != null) {
-                try {
-                    Thread.sleep(1000);
-                } catch (InterruptedException e) {
-                    log.error("Stop transfer verticle error: %s".formatted(e.getMessage()));
-                    stopPromise.fail(e);
-                }
+        // Poll with a timer instead of sleeping: a sleeping stop() held this context, so a transfer waiting
+        // on a database call could never finish and shutdown hung.
+        long deadline = System.currentTimeMillis() + 30_000;
+        vertx.setPeriodic(0, 200, id -> {
+            if (beingTransferred == null || System.currentTimeMillis() > deadline) {
+                vertx.cancelTimer(id);
+                log.info("Transfer verticle stopped");
+                stopPromise.complete();
             }
-        }
-        log.info("Transfer verticle stopped");
-        stopPromise.complete();
+        });
     }
 
     private Future<Void> initEventConsumer() {
@@ -145,8 +142,11 @@ public class TransferVerticle extends AbstractVerticle {
                 continue;
             }
             Tuple3<List<FileRecord>, Long, Long> filesTuple = Future.await(DataVerticle.fileRepository.getFiles(automation.chatId,
+                    // Same chat downloaded by another account has no Transfer under this key: exclude it, or
+                    // those rows would fill every batch and starve this automation.
                     Map.of("downloadStatus", FileRecord.DownloadStatus.completed.name(),
                             "transferStatus", FileRecord.TransferStatus.idle.name(),
+                            "telegramId", String.valueOf(automation.telegramId),
                             "limit", String.valueOf(HISTORY_BATCH_SIZE)
                     )
             ));

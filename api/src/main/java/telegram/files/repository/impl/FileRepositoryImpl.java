@@ -109,6 +109,11 @@ public class FileRepositoryImpl extends AbstractSqlRepository implements FileRep
             whereClause += " AND chat_id = #{chatId}";
             params.put("chatId", chatId);
         }
+        Long telegramId = Convert.toLong(filter.get("telegramId"), null);
+        if (telegramId != null) {
+            whereClause += " AND telegram_id = #{telegramId}";
+            params.put("telegramId", telegramId);
+        }
         if (StrUtil.isNotBlank(search)) {
             whereClause += " AND (file_name LIKE #{search} OR caption LIKE #{search})";
             params.put("search", "%%" + search + "%%");
