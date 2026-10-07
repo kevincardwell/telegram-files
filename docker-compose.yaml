@@ -1,7 +1,7 @@
 services:
   telegram-files:
     container_name: telegram-files
-    image: ghcr.io/jarvis2f/telegram-files:latest
+    image: ghcr.io/kevincardwell/telegram-files:latest
     restart: always
     # Uncomment the following lines to enable health check for the service.
     #    depends_on:

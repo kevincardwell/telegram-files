@@ -6,13 +6,26 @@
 	<em><code>A self-hosted Telegram file downloader for continuous, stable, and unattended downloads.</code></em>
 </p>
 <p align="center">
-	<img src="https://img.shields.io/github/license/jarvis2f/telegram-files?style=default&logo=opensourceinitiative&logoColor=white&color=0080ff" alt="license">
-	<img src="https://img.shields.io/github/last-commit/jarvis2f/telegram-files?style=default&logo=git&logoColor=white&color=0080ff" alt="last-commit">
-	<img src="https://img.shields.io/github/v/release/jarvis2f/telegram-files?style=default&logo=git&logoColor=white&color=0080ff" alt="release">
-    <a href="https://codecov.io/gh/jarvis2f/telegram-files" > 
-        <img src="https://codecov.io/gh/jarvis2f/telegram-files/graph/badge.svg?token=Y4YN2W8ARV"/> 
-    </a>
+	<img src="https://img.shields.io/github/license/kevincardwell/telegram-files?style=default&logo=opensourceinitiative&logoColor=white&color=0080ff" alt="license">
+	<img src="https://img.shields.io/github/last-commit/kevincardwell/telegram-files?style=default&logo=git&logoColor=white&color=0080ff" alt="last-commit">
 </p>
+
+> **This is a fork of [jarvis2f/telegram-files](https://github.com/jarvis2f/telegram-files) based on 0.3.1.**
+> It skips upstream 0.4.0 (mandatory admin login, Seed/torrent sharing) and focuses on a faster, more
+> reliable downloader. Highlights:
+>
+> - **Downloads that don't get stuck:** paused files stay paused, stalled "downloading" rows resume themselves,
+>   finished files free their slot immediately (no 10 s polling), duplicate-start races fixed.
+> - **No more `database is locked`:** single SQLite writer, proper indexes (status updates no longer scan the table),
+>   progress ticks don't touch the database.
+> - **Transfers that finish:** the queue drains continuously, SKIP no longer loops, crashed moves recover.
+> - **Smoother UI:** live progress re-renders one row instead of the whole page; thumbnails are patched in place
+>   and cached by the browser.
+> - **Security:** SQL injection and the filter-expression sandbox escape (upstream #130) fixed; optional basic auth.
+> - **Current stack:** TDLib 1.8.66 (opens sessions created by 0.4.0), JDK 25, Node 24, Alpine 3.24.
+>
+> Upgrading from upstream 0.3.x **or 0.4.0** keeps your data: point the container at the same data directory.
+> Leftover 0.4.0 tables are ignored.
 <br>
 
 ## 🔗 Table of Contents
@@ -79,8 +92,15 @@ docker run -d \
   -e TELEGRAM_API_HASH=${TELEGRAM_API_HASH} \
   -p 6543:80 \
   -v ./data:/app/data \
-  ghcr.io/jarvis2f/telegram-files:latest
+  ghcr.io/kevincardwell/telegram-files:latest
 ```
+
+Optional environment variables added by this fork:
+
+| Variable | Purpose |
+|---|---|
+| `AUTH_USERNAME`, `AUTH_PASSWORD` | Put HTTP basic auth in front of the UI and API (both must be set). |
+| `JAVA_OPTS` | Extra JVM flags, e.g. `-Xmx512m`. |
 
 **Using `docker-compose`**
 
@@ -92,7 +112,9 @@ docker-compose up -d
 
 **Install on unRaid**
 
-On unRaid, install from the Community Repositories by searching for `telegram-files`.
+Use the upstream Community Applications template and change the repository to
+`ghcr.io/kevincardwell/telegram-files:latest`. Keep the data directory on a cache/disk share
+(e.g. `/mnt/cache/appdata/...`) rather than `/mnt/user/...`: SQLite's WAL mode is unreliable on Unraid's FUSE user shares.
 
 > **Important Note:** You should NOT expose the service to the public internet. Because the service is not secure.
 
@@ -104,7 +126,7 @@ On unRaid, install from the Community Repositories by searching for `telegram-fi
 
 Before getting started with telegram-files, ensure your runtime environment meets the following requirements:
 
-- **Programming Language:** JDK23,TypeScript
+- **Programming Language:** JDK 25, TypeScript
 - **Package Manager:** Gradle,Npm
 - **Container Runtime:** Docker
 
@@ -117,7 +139,7 @@ Install telegram-files using one of the following methods:
 1. Clone the telegram-files repository:
 
 ```sh
-git clone https://github.com/jarvis2f/telegram-files
+git clone https://github.com/kevincardwell/telegram-files
 ```
 
 2. Navigate to the project directory:
@@ -148,7 +170,7 @@ gradle build
 &nbsp; [<img align="center" src="https://img.shields.io/badge/Docker-2CA5E0.svg?style={badge_style}&logo=docker&logoColor=white" />](https://www.docker.com/)
 
 ```sh
-docker build -t jarvis2f/telegram-files .
+docker build -t telegram-files .
 ```
 
 ## 📌 Project Roadmap
@@ -177,7 +199,7 @@ docker build -t jarvis2f/telegram-files .
 1. **Fork the Repository**: Start by forking the project repository to your github account.
 2. **Clone Locally**: Clone the forked repository to your local machine using a git client.
    ```sh
-   git clone https://github.com/jarvis2f/telegram-files
+   git clone https://github.com/kevincardwell/telegram-files
    ```
 3. **Create a New Branch**: Always work on a new branch, giving it a descriptive name.
    ```sh
@@ -238,7 +260,7 @@ docker run --rm \
   -e APP_ROOT=${APP_ROOT:-/app/data} \
   -e TELEGRAM_API_ID=${TELEGRAM_API_ID} \
   -e TELEGRAM_API_HASH=${TELEGRAM_API_HASH} \
-  ghcr.io/jarvis2f/telegram-files:latest ${Maintenance Command}
+  ghcr.io/kevincardwell/telegram-files:latest ${Maintenance Command}
 ```
 
 **Maintenance Command:**
