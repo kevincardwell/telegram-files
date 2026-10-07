@@ -556,7 +556,8 @@ public class HttpVerticle extends AbstractVerticle {
 
                     fileRouteHandler.handle(ctx, tuple.v1, mimeType);
                 })
-                .onFailure(ctx::fail);
+                // Not downloaded yet is a 404, not a server error (log spam, upstream #105).
+                .onFailure(_ -> ctx.fail(404));
     }
 
     private void handleFileStartDownload(RoutingContext ctx) {
