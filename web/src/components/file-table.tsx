@@ -270,7 +270,7 @@ export function FileTable({
           <div className="sticky top-0 z-20 flex h-10 items-center border-b bg-background/90 text-sm text-muted-foreground backdrop-blur-sm">
             <div className="w-[30px] text-center">
               <Checkbox
-                checked={selectedFiles.size === files.length}
+                checked={files.length > 0 && selectedFiles.size === files.length}
                 onCheckedChange={handleSelectAll}
               />
             </div>
