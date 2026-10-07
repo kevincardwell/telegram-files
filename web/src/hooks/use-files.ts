@@ -1,4 +1,11 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useEffectEvent,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import {
   type DownloadStatus,
   type FileFilter,
@@ -11,6 +18,7 @@ import { WebSocketMessageType } from "@/lib/websocket-types";
 import { useLocalStorage } from "@/hooks/use-local-storage";
 import { useDebounce } from "use-debounce";
 import { useWebSocketMessage } from "@/lib/ws-store";
+import { useWebsocket } from "@/hooks/use-websocket";
 
 const DEFAULT_FILTERS: FileFilter = {
   search: "",
@@ -22,6 +30,7 @@ const DEFAULT_FILTERS: FileFilter = {
 };
 
 const PAGE_SIZE = 50;
+const RESYNC_AFTER_HIDDEN_MS = 30_000;
 /** Start fetching the next page when the last rendered row is this close to the end. */
 export const PREFETCH_ROWS = 20;
 
@@ -238,6 +247,33 @@ export function useFiles(
       },
     }));
   });
+
+  // Status overrides are only trustworthy while every event arrives. After the socket drops or
+  // the tab sat in the background, refetch once and then let server data win again.
+  const { isReady } = useWebsocket();
+  const resync = useEffectEvent(() => {
+    void mutate().then(() => setLatestFileStatus({}));
+  });
+  const hasConnected = useRef(false);
+  useEffect(() => {
+    if (!isReady) return;
+    if (hasConnected.current) resync();
+    hasConnected.current = true;
+  }, [isReady]);
+  useEffect(() => {
+    let hiddenAt = 0;
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "hidden") {
+        hiddenAt = Date.now();
+        return;
+      }
+      if (hiddenAt && Date.now() - hiddenAt > RESYNC_AFTER_HIDDEN_MS) resync();
+      hiddenAt = 0;
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () =>
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+  }, []);
 
   useEffect(() => {
     if (noAccountSpecified && !filters.offline) {
