@@ -1,11 +1,11 @@
 import { LoaderPinwheel } from "lucide-react";
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { useFiles } from "@/hooks/use-files";
 import { useWindowVirtualizer } from "@tanstack/react-virtual";
 import { FileCard } from "@/components/mobile/file-card";
 import FileDrawer from "@/components/mobile/file-drawer";
 import type { TelegramFile } from "@/lib/types";
-import { isEqual } from "lodash";
+import { fileKey, findWithNeighbours } from "@/lib/utils";
 import FileFilters from "@/components/file-filters";
 import DraggableElement from "@/components/ui/draggable-element";
 import { useLocalStorage } from "@/hooks/use-local-storage";
@@ -20,9 +20,7 @@ interface FileListProps {
 
 export default function FileList({ accountId, chatId, link }: FileListProps) {
   const useFilesProps = useFiles(accountId, chatId, undefined, link);
-  const [currentViewFile, setCurrentViewFile] = useState<
-    TelegramFile | undefined
-  >();
+  const [viewFile, setViewFile] = useState<TelegramFile>();
   const [currentTagsFile, setCurrentTagsFile] = useState<
     TelegramFile | undefined
   >();
@@ -46,7 +44,7 @@ export default function FileList({ accountId, chatId, link }: FileListProps) {
   } = useFilesProps;
 
   const handleFileClick = useCallback((file: TelegramFile) => {
-    setCurrentViewFile(file);
+    setViewFile(file);
     setIsDrawerOpen(true);
   }, []);
 
@@ -87,24 +85,14 @@ export default function FileList({ accountId, chatId, link }: FileListProps) {
     }
   }, [files.length, handleLoadMore, hasMore, isLoading, rowVirtual]);
 
-  useEffect(() => {
-    if (files.length === 0 || !currentViewFile) {
-      return;
-    }
-    const index = files.findIndex((f) => f.id === currentViewFile.id);
-    if (index === -1) {
-      // 只有在drawer关闭时才清除currentViewFile，避免下载完成时意外关闭
-      if (!isDrawerOpen) {
-        setCurrentViewFile(undefined);
-      }
-      return;
-    }
-    const file = files[index]!;
-    if (!isEqual(file, currentViewFile)) {
-      // 静默更新文件数据，不触发drawer关闭
-      setCurrentViewFile(file);
-    }
-  }, [files, currentViewFile, isDrawerOpen]);
+  // Read the viewed file from the live list each render; if it drops out of the list while the
+  // drawer is open (e.g. a status filter), keep showing the last snapshot instead of closing.
+  const currentViewFile = useMemo(
+    () =>
+      findWithNeighbours(files, viewFile && fileKey(viewFile)) ??
+      (isDrawerOpen ? viewFile : undefined),
+    [files, viewFile, isDrawerOpen],
+  );
 
   return (
     <div className="space-y-4">
@@ -124,7 +112,7 @@ export default function FileList({ accountId, chatId, link }: FileListProps) {
           open={isDrawerOpen}
           onOpenChange={setIsDrawerOpen}
           file={currentViewFile}
-          onFileChange={setCurrentViewFile}
+          onFileChange={setViewFile}
           onFileTagsClick={(file) => {
             setCurrentTagsFile(file);
             setIsTagsDrawerOpen(true);
@@ -187,7 +175,7 @@ export default function FileList({ accountId, chatId, link }: FileListProps) {
             }
             return (
               <FileCard
-                key={`${file.id}-${file.uniqueId}-${virtualRow.index}`}
+                key={fileKey(file)}
                 index={virtualRow.index}
                 start={virtualRow.start}
                 size={virtualRow.size}

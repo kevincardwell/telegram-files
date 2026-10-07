@@ -18,7 +18,7 @@ import {
 import TableColumnFilter, {
   type Column,
 } from "@/components/table-column-filter";
-import { cn } from "@/lib/utils";
+import { cn, fileKey, findWithNeighbours } from "@/lib/utils";
 import FileNotFount from "@/components/file-not-found";
 import FileRow, { type FileRowProperties } from "@/components/file-row";
 import { useVirtualizer } from "@tanstack/react-virtual";
@@ -99,9 +99,13 @@ export function FileTable({
     files,
     handleLoadMore,
   } = useFilesProps;
-  const [currentViewFile, setCurrentViewFile] = useState<
-    TelegramFile | undefined
-  >();
+  // Track the viewed file by key and read it from the live list each render, so status/progress
+  // changes show up in the viewer and it closes if the file leaves the list.
+  const [viewKey, setViewKey] = useState<string>();
+  const currentViewFile = useMemo(
+    () => findWithNeighbours(files, viewKey),
+    [files, viewKey],
+  );
   const [viewerOpen, setViewerOpen] = useState(false);
   const rowVirtual = useVirtualizer({
     count: files.length,
@@ -138,21 +142,6 @@ export function FileTable({
     }
     //eslint-disable-next-line
   }, [files.length, handleLoadMore, rowVirtual.getVirtualItems()]);
-
-  useEffect(() => {
-    if (files.length === 0 || !currentViewFile) {
-      return;
-    }
-    const index = files.findIndex((f) => f.id === currentViewFile.id);
-    if (index === -1) {
-      setCurrentViewFile(undefined);
-      return;
-    }
-    const file = files[index]!;
-    if (currentViewFile.next === undefined && file.next !== undefined) {
-      setCurrentViewFile(file);
-    }
-  }, [currentViewFile, files]);
 
   const dynamicClass = useMemo(() => {
     switch (rowHeight) {
@@ -195,8 +184,12 @@ export function FileTable({
   }, []);
 
   const handleFileClick = useCallback((file: TelegramFile) => {
-    setCurrentViewFile(file);
+    setViewKey(fileKey(file));
     setViewerOpen(true);
+  }, []);
+
+  const handleViewFileChange = useCallback((file: TelegramFile) => {
+    setViewKey(fileKey(file));
   }, []);
 
   const rowProperties = useMemo<FileRowProperties>(
@@ -255,7 +248,7 @@ export function FileTable({
           open={viewerOpen}
           onOpenChange={setViewerOpen}
           file={currentViewFile}
-          onFileChange={setCurrentViewFile}
+          onFileChange={handleViewFileChange}
           {...useFilesProps}
         />
       )}
@@ -321,7 +314,7 @@ export function FileTable({
                       onSelect={handleSelectFile}
                       onFileClick={handleFileClick}
                       properties={rowProperties}
-                      key={`${file.messageId}-${file.uniqueId}-${virtualRow.index}`}
+                      key={fileKey(file)}
                     />
                   );
                 })}

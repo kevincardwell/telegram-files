@@ -1,9 +1,25 @@
 import { type ClassValue, clsx } from "clsx";
 import { twMerge } from "tailwind-merge";
-import { type Proxy } from "@/lib/types";
+import { type Proxy, type TelegramFile } from "@/lib/types";
 
 export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
+}
+
+/** Stable row identity: the same file (uniqueId) can appear in several messages. */
+export function fileKey(file: TelegramFile) {
+  return `${file.telegramId}-${file.chatId}-${file.messageId}-${file.uniqueId}`;
+}
+
+/** The file with this key from the live list, linked to its neighbours for prev/next navigation. */
+export function findWithNeighbours(
+  files: TelegramFile[],
+  key: string | undefined,
+): TelegramFile | undefined {
+  if (!key) return undefined;
+  const index = files.findIndex((f) => fileKey(f) === key);
+  if (index === -1) return undefined;
+  return { ...files[index]!, prev: files[index - 1], next: files[index + 1] };
 }
 
 export function parseProxyString(proxyString: string): Proxy | null {
