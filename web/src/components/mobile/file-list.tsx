@@ -1,6 +1,6 @@
 import { LoaderPinwheel } from "lucide-react";
 import React, { useCallback, useEffect, useMemo, useState } from "react";
-import { useFiles } from "@/hooks/use-files";
+import { PREFETCH_ROWS, useFiles } from "@/hooks/use-files";
 import { useWindowVirtualizer } from "@tanstack/react-virtual";
 import { FileCard } from "@/components/mobile/file-card";
 import FileDrawer from "@/components/mobile/file-drawer";
@@ -65,7 +65,7 @@ export default function FileList({ accountId, chatId, link }: FileListProps) {
       }
       return !file.thumbnail ? 116 : 340;
     },
-    overscan: 5,
+    overscan: 8,
     scrollMargin: 0,
     gap: 10,
   });
@@ -80,7 +80,11 @@ export default function FileList({ accountId, chatId, link }: FileListProps) {
       return;
     }
 
-    if (lastItem.index >= files.length - 1 && hasMore && !isLoading) {
+    if (
+      lastItem.index >= files.length - 1 - PREFETCH_ROWS &&
+      hasMore &&
+      !isLoading
+    ) {
       void handleLoadMore();
     }
   }, [files.length, handleLoadMore, hasMore, isLoading, rowVirtual]);

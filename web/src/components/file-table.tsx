@@ -9,7 +9,7 @@ import React, {
 import { Checkbox } from "@/components/ui/checkbox";
 import { Button } from "@/components/ui/button";
 import { LoaderPinwheel, SquareChevronLeft, WandSparkles } from "lucide-react";
-import { useFiles } from "@/hooks/use-files";
+import { PREFETCH_ROWS, useFiles } from "@/hooks/use-files";
 import {
   getRowHeightPX,
   TableRowHeightSwitch,
@@ -125,6 +125,7 @@ export function FileTable({
     },
     paddingStart: 1,
     paddingEnd: 1,
+    overscan: 8,
   });
 
   useEffect(() => {
@@ -137,7 +138,7 @@ export function FileTable({
       return;
     }
 
-    if (lastItem.index >= files.length - 1) {
+    if (lastItem.index >= files.length - 1 - PREFETCH_ROWS) {
       void handleLoadMore();
     }
     //eslint-disable-next-line

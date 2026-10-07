@@ -21,6 +21,10 @@ const DEFAULT_FILTERS: FileFilter = {
   tags: [],
 };
 
+const PAGE_SIZE = 50;
+/** Start fetching the next page when the last rendered row is this close to the end. */
+export const PREFETCH_ROWS = 20;
+
 type FileResponse = {
   files: TelegramFile[];
   count: number;
@@ -107,6 +111,7 @@ export function useFiles(
   );
   const getKey = (page: number, previousPageData: FileResponse) => {
     const params = new URLSearchParams({
+      limit: PAGE_SIZE.toString(),
       ...(filters.search && {
         search: window.encodeURIComponent(filters.search),
       }),
