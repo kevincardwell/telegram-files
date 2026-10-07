@@ -77,6 +77,7 @@ public class DataVerticle extends AbstractVerticle {
                     Version version = tuple.v2 == null ? new Version("0.0.0") : tuple.v2;
                     return sequentially(d -> d.migrate(pool, version, new Version(Start.VERSION)));
                 })
+                .compose(_ -> sequentially(d -> d.createIndexes(pool)))
                 .compose(r ->
                         settingRepository.createOrUpdate(SettingKey.version.name(), Start.VERSION))
                 .onSuccess(r -> {

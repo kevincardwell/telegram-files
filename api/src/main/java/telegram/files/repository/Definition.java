@@ -28,11 +28,18 @@ public interface Definition {
     }
 
     default Future<Void> createTable(SqlClient sqlClient) {
-        Future<Void> future = sqlClient
+        return sqlClient
                 .query(getScheme())
                 .execute()
                 .onFailure(err -> log.error("Failed to create table: %s".formatted(err.getMessage())))
                 .mapEmpty();
+    }
+
+    /**
+     * Runs after migrations, which may add the indexed columns.
+     */
+    default Future<Void> createIndexes(SqlClient sqlClient) {
+        Future<Void> future = Future.succeededFuture();
         for (String sql : getIndexes()) {
             future = future.compose(_ -> sqlClient.query(sql).execute()
                     .<Void>mapEmpty()
