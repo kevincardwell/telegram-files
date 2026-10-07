@@ -1,18 +1,18 @@
 plugins {
     id 'java'
-    id 'com.gradleup.shadow' version '8.3.5'
+    id 'com.gradleup.shadow' version '9.6.1'
     id 'jacoco'
 }
 
 group = 'telegram.files'
-version = '0.3.1'
+version = '0.5.0'
 
 repositories {
     mavenCentral()
 }
 
 ext {
-    vertxVersion = '5.0.0'
+    vertxVersion = '5.0.12'
 }
 
 dependencies {
@@ -49,7 +49,8 @@ dependencies {
     testImplementation "io.vertx:vertx-junit5:$vertxVersion"
     testImplementation platform('org.junit:junit-bom:5.10.0')
     testImplementation 'org.junit.jupiter:junit-jupiter'
-    testImplementation 'org.mockito:mockito-core:5.15.2'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+    testImplementation 'org.mockito:mockito-core:5.20.0'
 }
 
 test {

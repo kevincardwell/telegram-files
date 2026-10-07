@@ -33,6 +33,8 @@ import java.util.stream.IntStream;
 public class FileRepositoryImpl extends AbstractSqlRepository implements FileRepository {
 
     private static final Log log = LogFactory.get();
+    private static final Set<String> SORT_COLUMNS = Set.of("date", "completion_date", "size", "reaction_count");
+    private static final Set<String> SORT_ORDERS = Set.of("asc", "desc");
 
     public FileRepositoryImpl(SqlClient sqlClient) {
         super(sqlClient);
@@ -40,9 +42,25 @@ public class FileRepositoryImpl extends AbstractSqlRepository implements FileRep
 
     @Override
     public Future<FileRecord> create(FileRecord fileRecord) {
+        return insert(fileRecord).map(fileRecord);
+    }
+
+    @Override
+    public Future<Boolean> createIfNotExist(FileRecord fileRecord) {
+        return this.getByUniqueId(fileRecord.uniqueId())
+                .compose(record -> record != null ? Future.succeededFuture(false) : insert(fileRecord));
+    }
+
+    /**
+     * Inserts the record, ignoring a duplicate primary key: two concurrent starts of the same file used to
+     * race between the existence check and the INSERT and kill the download with a PK violation.
+     *
+     * @return whether a row was inserted
+     */
+    private Future<Boolean> insert(FileRecord fileRecord) {
         return SqlTemplate
-                .forUpdate(sqlClient, """
-                        INSERT INTO file_record(id, unique_id, telegram_id, chat_id, message_id, media_album_id, date, has_sensitive_content,
+                .forUpdate(sqlClient, (Config.isMysql() ? "INSERT IGNORE" : "INSERT") + """
+                         INTO file_record(id, unique_id, telegram_id, chat_id, message_id, media_album_id, date, has_sensitive_content,
                                                 size, downloaded_size,
                                                 type, mime_type,
                                                 file_name, thumbnail, thumbnail_unique_id, caption, extra, local_path,
@@ -51,30 +69,19 @@ public class FileRepositoryImpl extends AbstractSqlRepository implements FileRep
                                 #{has_sensitive_content}, #{size}, #{downloaded_size}, #{type},
                                 #{mime_type}, #{file_name}, #{thumbnail}, #{thumbnail_unique_id}, #{caption}, #{extra}, #{local_path},
                                 #{download_status}, #{start_date}, #{transfer_status}, #{tags}, #{thread_chat_id}, #{message_thread_id}, #{reaction_count})
-                        """)
+                        """ + (Config.isMysql() ? "" : " ON CONFLICT DO NOTHING"))
                 .mapFrom(FileRecord.PARAM_MAPPER)
                 .execute(fileRecord)
-                .map(r -> fileRecord)
-                .compose(r -> {
-                    if (Objects.equals(r.type(), "thumbnail")) {
-                        return Future.succeededFuture(r);
-                    } else {
-                        return this.updateAlbumDataByMediaAlbumId(fileRecord.mediaAlbumId(), fileRecord.caption(), fileRecord.reactionCount()).map(r);
+                .map(r -> r.rowCount() > 0)
+                .compose(inserted -> {
+                    if (!inserted || Objects.equals(fileRecord.type(), "thumbnail")) {
+                        return Future.succeededFuture(inserted);
                     }
+                    return this.updateAlbumDataByMediaAlbumId(fileRecord.mediaAlbumId(), fileRecord.caption(), fileRecord.reactionCount())
+                            .map(inserted);
                 })
-                .onSuccess(r -> log.trace("Successfully created file record: %s".formatted(fileRecord.id())))
+                .onSuccess(inserted -> log.trace("File record %s: %s".formatted(inserted ? "created" : "already exists", fileRecord.uniqueId())))
                 .onFailure(err -> log.error("Failed to create file record: %s".formatted(err.getMessage())));
-    }
-
-    @Override
-    public Future<Boolean> createIfNotExist(FileRecord fileRecord) {
-        return this.getByUniqueId(fileRecord.uniqueId())
-                .compose(record -> {
-                    if (record != null) {
-                        return Future.succeededFuture(false);
-                    }
-                    return this.create(fileRecord).map(true);
-                });
     }
 
     @Override
@@ -123,11 +130,19 @@ public class FileRepositoryImpl extends AbstractSqlRepository implements FileRep
             params.put("transferStatus", transferStatus);
         }
         if (CollUtil.isNotEmpty(tags)) {
-            String tagClause = tags.stream()
-                    .filter(StrUtil::isNotBlank)
-                    .map(tag -> "tags LIKE '%%" + tag + "%%'")
-                    .collect(Collectors.joining(" OR "));
-            whereClause += " AND (%s)".formatted(tagClause);
+            List<String> tagClauses = new ArrayList<>();
+            int tagIndex = 0;
+            for (String tag : tags) {
+                if (StrUtil.isBlank(tag)) {
+                    continue;
+                }
+                String paramName = "tag" + tagIndex++;
+                tagClauses.add("tags LIKE #{" + paramName + "}");
+                params.put(paramName, "%%" + tag + "%%");
+            }
+            if (CollUtil.isNotEmpty(tagClauses)) {
+                whereClause += " AND (%s)".formatted(String.join(" OR ", tagClauses));
+            }
         }
         if (messageThreadId != 0) {
             whereClause += " AND message_thread_id = #{messageThreadId}";
@@ -164,24 +179,26 @@ public class FileRepositoryImpl extends AbstractSqlRepository implements FileRep
             }
         }
         String orderBy = "message_id DESC";
-        boolean customSort = StrUtil.isNotBlank(sort) && StrUtil.isNotBlank(order);
+        boolean customSort = StrUtil.isNotBlank(sort) && StrUtil.isNotBlank(order)
+                             && SORT_COLUMNS.contains(sort) && SORT_ORDERS.contains(order);
         if (customSort) {
-            orderBy = "%s %s".formatted(sort, order);
+            orderBy = "%s %s, message_id DESC".formatted(sort, order);
             if (Objects.equals(sort, "completion_date")) {
                 // For completion_date, we need to ensure the date is in milliseconds
                 whereClause += " AND completion_date IS NOT NULL";
             }
+        } else if (StrUtil.isNotBlank(sort) || StrUtil.isNotBlank(order)) {
+            log.warn("Ignored unsupported file sort: sort={}, order={}", sort, order);
         }
         String countClause = whereClause;
         if (fromMessageId > 0) {
             params.put("fromMessageId", fromMessageId);
             if (customSort) {
-                long fromSortField = Convert.toLong(filter.get("fromSortField"));
-                whereClause += " AND (%s %s %s OR (%s = %s AND message_id < #{fromMessageId}))".formatted(sort,
+                long fromSortField = Convert.toLong(filter.get("fromSortField"), 0L);
+                params.put("fromSortField", fromSortField);
+                whereClause += " AND (%s %s #{fromSortField} OR (%s = #{fromSortField} AND message_id < #{fromMessageId}))".formatted(sort,
                         Objects.equals(order, "asc") ? ">" : "<",
-                        fromSortField,
-                        sort,
-                        fromSortField);
+                        sort);
             } else {
                 whereClause += " AND message_id < #{fromMessageId}";
             }

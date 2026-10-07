@@ -69,13 +69,13 @@ public class DataVerticle extends AbstractVerticle {
         fileRepository = new FileRepositoryImpl(pool);
         statisticRepository = new StatisticRepositoryImpl(pool);
         isCompletelyNewInitialization()
-                .compose(isNew -> Future.all(definitions.stream().map(d -> d.createTable(pool)).toList()).map(isNew))
+                .compose(isNew -> sequentially(d -> d.createTable(pool)).map(isNew))
                 .compose(isNew -> settingRepository.<Version>getByKey(SettingKey.version).map(version -> Tuple.tuple(isNew, version)))
                 .compose(tuple -> {
                     if (tuple.v1) return Future.succeededFuture();
 
                     Version version = tuple.v2 == null ? new Version("0.0.0") : tuple.v2;
-                    return Future.all(definitions.stream().map(d -> d.migrate(pool, version, new Version(Start.VERSION))).toList());
+                    return sequentially(d -> d.migrate(pool, version, new Version(Start.VERSION)));
                 })
                 .compose(r ->
                         settingRepository.createOrUpdate(SettingKey.version.name(), Start.VERSION))
@@ -103,6 +103,14 @@ public class DataVerticle extends AbstractVerticle {
         }
     }
 
+    private static Future<Void> sequentially(java.util.function.Function<Definition, Future<Void>> step) {
+        Future<Void> future = Future.succeededFuture();
+        for (Definition definition : definitions) {
+            future = future.compose(_ -> step.apply(definition));
+        }
+        return future;
+    }
+
     public static String getDataPath() {
         String dataPath = System.getenv("DATA_PATH");
         dataPath = StrUtil.blankToDefault(dataPath, "data.db");
@@ -113,14 +121,16 @@ public class DataVerticle extends AbstractVerticle {
     private Pool buildSqlClient() {
         PoolOptions poolOptions = new PoolOptions()
                 .setShared(true)
-                .setMaxSize(8)
+                // SQLite has one writer: more connections only turn into "database is locked" and parked workers.
+                .setMaxSize(Config.isSqlite() ? 1 : 8)
+                .setConnectionTimeout(60000)
                 .setName("pool-tf")
                 .setIdleTimeout(300000)
                 .setPoolCleanerPeriod(300000);
 
         return createPool(vertx,
                 Config.isSqlite() ? new JDBCConnectOptions()
-                        .setJdbcUrl("jdbc:sqlite:%s?journal_mode=WAL&busy_timeout=30000&synchronous=NORMAL&cache_size=-2000".formatted(getDataPath())) :
+                        .setJdbcUrl("jdbc:sqlite:%s?journal_mode=WAL&busy_timeout=30000&synchronous=NORMAL&cache_size=-16000&temp_store=MEMORY".formatted(getDataPath())) :
                         sqlConnectOptions,
                 poolOptions);
     }

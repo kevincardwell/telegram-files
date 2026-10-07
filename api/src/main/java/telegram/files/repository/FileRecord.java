@@ -8,9 +8,11 @@ import io.vertx.sqlclient.templates.TupleMapper;
 import org.drinkless.tdlib.TdApi;
 import telegram.files.Config;
 
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.TreeMap;
+import java.util.stream.Stream;
 
 public record FileRecord(int id, //file id will change
                          String uniqueId, // unique id of the file, if empty, it means the file is cant be downloaded
@@ -116,6 +118,34 @@ public record FileRecord(int id, //file id will change
         public TreeMap<Version, String[]> getMigrations() {
             return MIGRATIONS;
         }
+
+        @Override
+        public List<String> getIndexes() {
+            return INDEXES;
+        }
+    }
+
+    // Names match upstream 0.4.0, so databases it already migrated don't rebuild anything.
+    private static final List<String> INDEXES = Stream.of(
+            "idx_file_unique_id (unique_id)",
+            "idx_file_message (message_id)",
+            "idx_file_chat_message_plain (chat_id, message_id)",
+            "idx_file_chat_message (chat_id, type, message_id)",
+            "idx_file_telegram_type_status (telegram_id, type, download_status)",
+            "idx_file_telegram_status (telegram_id, download_status)",
+            "idx_file_telegram_completion (telegram_id, type, completion_date)",
+            "idx_file_album (media_album_id)",
+            "idx_file_thread (telegram_id, thread_chat_id, message_thread_id, type)",
+            "idx_file_status_message (download_status, message_id)",
+            "idx_file_type_size_message (type, size, message_id)",
+            "idx_file_type_date_message (type, date, message_id)",
+            "idx_file_type_completion_message (type, completion_date, message_id)",
+            "idx_file_type_reaction_message (type, reaction_count, message_id)"
+    ).map(FileRecord::indexSql).toList();
+
+    static String indexSql(String nameAndColumns) {
+        String[] parts = nameAndColumns.split(" ", 2);
+        return "CREATE INDEX %s%s ON file_record %s".formatted(Config.isMysql() ? "" : "IF NOT EXISTS ", parts[0], parts[1]);
     }
 
     public static RowMapper<FileRecord> ROW_MAPPER = row ->

@@ -31,6 +31,12 @@ public record StatisticRecord(
         public String getScheme() {
             return SCHEME;
         }
+
+        @Override
+        public java.util.List<String> getIndexes() {
+            return java.util.List.of("CREATE INDEX %sidx_statistic_related_type_time ON statistic_record (related_id, type, timestamp)"
+                    .formatted(telegram.files.Config.isMysql() ? "" : "IF NOT EXISTS "));
+        }
     }
 
     public static RowMapper<StatisticRecord> ROW_MAPPER = row ->

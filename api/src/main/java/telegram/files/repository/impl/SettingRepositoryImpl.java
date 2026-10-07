@@ -13,7 +13,7 @@ import telegram.files.repository.SettingKey;
 import telegram.files.repository.SettingRecord;
 import telegram.files.repository.SettingRepository;
 
-import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
@@ -50,18 +50,25 @@ public class SettingRepositoryImpl extends AbstractSqlRepository implements Sett
         if (CollUtil.isEmpty(keys)) {
             return Future.succeededFuture(List.of());
         }
-        String keyStr = keys.stream()
+        List<String> distinctKeys = keys.stream()
                 .filter(StrUtil::isNotBlank)
                 .distinct()
-                .map(key -> StrUtil.wrap(key, "'"))
-                .collect(Collectors.joining(","));
+                .toList();
+        if (distinctKeys.isEmpty()) {
+            return Future.succeededFuture(List.of());
+        }
+        Map<String, Object> params = new HashMap<>();
+        for (int i = 0; i < distinctKeys.size(); i++) {
+            params.put("key" + i, distinctKeys.get(i));
+        }
+        String keyStr = params.keySet().stream().map(k -> "#{" + k + "}").collect(Collectors.joining(","));
 
         return SqlTemplate
                 .forQuery(sqlClient, """
                         SELECT %s, value FROM setting_record WHERE %s IN (%s)
                         """.formatted(SettingRecord.KEY_FIELD, SettingRecord.KEY_FIELD, keyStr))
                 .mapTo(SettingRecord.ROW_MAPPER)
-                .execute(Collections.emptyMap())
+                .execute(params)
                 .map(IterUtil::toList)
                 .onSuccess(_ -> log.trace("Successfully fetched setting record for keys: " + keyStr))
                 .onFailure(
