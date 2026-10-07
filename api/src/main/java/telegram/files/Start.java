@@ -31,10 +31,8 @@ public class Start {
     }
 
     private static void registerShutdownHooks() {
-        Runtime.getRuntime().addShutdownHook(new Thread(() -> {
-            log.info("👋 Shutdown hook triggered");
-            close();
-        }));
+        // No logging here: JUL's own shutdown hook may already have closed the log file (NPE in the log).
+        Runtime.getRuntime().addShutdownHook(new Thread(Start::close));
 
         try {
             sun.misc.Signal.handle(new sun.misc.Signal("TERM"), _ -> {

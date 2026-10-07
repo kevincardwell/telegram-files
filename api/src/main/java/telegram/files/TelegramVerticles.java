@@ -45,6 +45,7 @@ public class TelegramVerticles {
                     if (CollUtil.isNotEmpty(uncertifiedPaths)) {
                         for (String uncertifiedPath : uncertifiedPaths) {
                             TelegramVerticle telegramVerticle = new TelegramVerticle(uncertifiedPath);
+                            telegramVerticle.restoredWithoutRecord = true;
                             if (!telegramVerticle.check()) {
                                 continue;
                             }

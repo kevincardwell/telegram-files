@@ -49,6 +49,10 @@ public class TelegramVerticle extends AbstractVerticle {
 
     private boolean needDelete = false;
 
+    // Loaded at startup from an account folder that has no account record: a login that was resumed, an
+    // account whose record was lost, or an abandoned "Add account" attempt.
+    boolean restoredWithoutRecord = false;
+
     public volatile TelegramRecord telegramRecord;
 
     private AvgSpeed avgSpeed = new AvgSpeed();
@@ -854,6 +858,31 @@ public class TelegramVerticle extends AbstractVerticle {
                 .mapEmpty();
     }
 
+    private void discardAbandonedLogin() {
+        restoredWithoutRecord = false;
+        vertx.executeBlocking(() -> hasDownloadedFiles(rootPath))
+                .onSuccess(hasFiles -> {
+                    if (hasFiles) {
+                        log.warn("[%s] Account folder has no account record and no login, but contains downloaded files; keeping it: %s"
+                                .formatted(getRootId(), rootPath));
+                        return;
+                    }
+                    log.info("[%s] Removing abandoned login attempt (never signed in): %s".formatted(getRootId(), rootPath));
+                    TelegramVerticles.remove(this);
+                    close(true);
+                });
+    }
+
+    /**
+     * TDLib keeps its databases at the top of the account folder and downloads in subfolders (photos, videos...).
+     */
+    private static boolean hasDownloadedFiles(String rootPath) throws java.io.IOException {
+        java.nio.file.Path root = java.nio.file.Path.of(rootPath);
+        try (Stream<java.nio.file.Path> files = java.nio.file.Files.walk(root)) {
+            return files.anyMatch(f -> !root.equals(f.getParent()) && f.toFile().isFile() && f.toFile().length() > 0);
+        }
+    }
+
     private void handleSaveAvgSpeed() {
         if (!authorized || telegramRecord == null) return;
         AvgSpeed.SpeedStats speedStats = avgSpeed.getSpeedStats();
@@ -1036,6 +1065,12 @@ public class TelegramVerticle extends AbstractVerticle {
                 client.execute(request).onSuccess(this::handleAuthorizationResult);
                 break;
             case TdApi.AuthorizationStateWaitPhoneNumber.CONSTRUCTOR:
+                if (restoredWithoutRecord && telegramRecord == null) {
+                    // Never signed in and nothing typed in: opening the "Add account" dialog creates such a
+                    // folder, and upstream reloaded every one of them forever as an "inactive" account.
+                    discardAbandonedLogin();
+                    break;
+                }
             case TdApi.AuthorizationStateWaitOtherDeviceConfirmation.CONSTRUCTOR:
             case TdApi.AuthorizationStateWaitEmailAddress.CONSTRUCTOR:
             case TdApi.AuthorizationStateWaitEmailCode.CONSTRUCTOR:
