@@ -146,15 +146,17 @@ export default function FilePreview({
   };
 
   // 已下载的文件
-  if (
+  const hasOriginal =
     file.localPath &&
-    (file.type === "photo" || file.mimeType?.startsWith("image/"))
-  ) {
-    if (file.extra?.width && file.extra?.height) {
-      return renderImage(file.extra.width, file.extra.height, file.uniqueId);
-    } else {
-      return renderImage(600, 600, file.uniqueId);
-    }
+    (file.type === "photo" || file.mimeType?.startsWith("image/"));
+  const renderOriginal = () =>
+    file.extra?.width && file.extra?.height
+      ? renderImage(file.extra.width, file.extra.height, file.uniqueId)
+      : renderImage(600, 600, file.uniqueId);
+
+  // Only the full preview loads the original; rows and cards use a thumbnail.
+  if (isFullPreview && hasOriginal) {
+    return renderOriginal();
   }
 
   // 含义已下载的缩略图
@@ -173,6 +175,11 @@ export default function FilePreview({
   // base64缩略图
   if (file.thumbnail) {
     return renderImage(isFullPreview ? 600 : 32, isFullPreview ? 600 : 32, "");
+  }
+
+  // No thumbnail at all: the original is better than an icon.
+  if (hasOriginal) {
+    return renderOriginal();
   }
 
   // 渲染没有图像的文件
