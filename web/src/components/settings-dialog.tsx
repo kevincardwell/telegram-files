@@ -9,15 +9,22 @@ import { Button } from "@/components/ui/button";
 import { Settings } from "lucide-react";
 import { VisuallyHidden } from "@radix-ui/react-visually-hidden";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import FileStatistics from "@/components/file-statistics";
 import { useTelegramAccount } from "@/hooks/use-telegram-account";
-import Proxys from "@/components/proxys";
-import SettingsForm from "@/components/settings-form";
-import About from "@/components/about";
 import { ChartColumnIncreasingIcon } from "@/components/ui/chart-column-increasing";
 import { LayoutPanelTopIcon } from "@/components/ui/layout-panel-top";
-import FilePhaseStatistics from "@/components/file-phase-statistics";
-import DebugTelegramMethod from "@/components/debug-telegram-method";
+import dynamic from "next/dynamic";
+
+// Tab bodies load on demand: Radix only mounts the open dialog's active tab.
+const SettingsForm = dynamic(() => import("@/components/settings-form"));
+const FileStatistics = dynamic(() => import("@/components/file-statistics"));
+const FilePhaseStatistics = dynamic(
+  () => import("@/components/file-phase-statistics"),
+);
+const Proxys = dynamic(() => import("@/components/proxys"));
+const DebugTelegramMethod = dynamic(
+  () => import("@/components/debug-telegram-method"),
+);
+const About = dynamic(() => import("@/components/about"));
 
 export const SettingsDialog: React.FC = () => {
   const [isOpen, setIsOpen] = useState(false);

@@ -4,7 +4,7 @@ import { Dialog, DialogOverlay, DialogPortal, DialogTitle } from "./ui/dialog";
 import { VisuallyHidden } from "@radix-ui/react-visually-hidden";
 import * as DialogPrimitive from "@radix-ui/react-dialog";
 import { cn } from "@/lib/utils";
-import FileVideo from "./file-video";
+import dynamic from "next/dynamic";
 import {
   ChevronLeft,
   ChevronRight,
@@ -17,6 +17,8 @@ import FileExtra from "@/components/file-extra";
 import { Button } from "@/components/ui/button";
 import useFileSwitch from "@/hooks/use-file-switch";
 import FileImage from "./file-image";
+
+const FileVideo = dynamic(() => import("@/components/file-video"));
 
 type FileViewerProps = {
   open: boolean;

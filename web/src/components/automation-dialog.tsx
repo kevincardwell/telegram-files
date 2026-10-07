@@ -20,7 +20,9 @@ import { Label } from "@/components/ui/label";
 import { type Auto } from "@/lib/types";
 import { Badge } from "./ui/badge";
 import { cn } from "@/lib/utils";
-import AutomationForm from "@/components/automation-form";
+import dynamic from "next/dynamic";
+
+const AutomationForm = dynamic(() => import("@/components/automation-form"));
 
 const DEFAULT_AUTO: Auto = {
   preload: {

@@ -1,7 +1,7 @@
 import "@/styles/globals.css";
 import type { Metadata } from "next";
 import { Inter } from "next/font/google";
-import React from "react";
+import React, { Suspense } from "react";
 import { Toaster } from "@/components/ui/toaster";
 import { SWRProvider } from "@/components/swr-provider";
 import { SettingsProvider } from "@/hooks/use-settings";
@@ -17,6 +17,15 @@ export const metadata: Metadata = {
   title: "Telegram Files",
   description: "Manage your files on Telegram",
 };
+
+function AppSkeleton() {
+  return (
+    <div className="container mx-auto animate-pulse px-4 py-6" aria-busy="true">
+      <div className="mb-6 h-[74px] rounded-xl border bg-muted/50" />
+      <div className="h-[calc(100vh-13rem)] rounded-md border bg-muted/30" />
+    </div>
+  );
+}
 
 export default async function RootLayout({
   children,
@@ -56,11 +65,15 @@ export default async function RootLayout({
             disableTransitionOnChange
           >
             <SWRProvider>
-              <WebSocketProvider>
-                <SettingsProvider>
-                  <TelegramAccountProvider>{children}</TelegramAccountProvider>
-                </SettingsProvider>
-              </WebSocketProvider>
+              {/* The providers read useSearchParams, which bails out of static rendering up
+                  to the nearest Suspense boundary; without one the exported HTML is empty. */}
+              <Suspense fallback={<AppSkeleton />}>
+                <WebSocketProvider>
+                  <SettingsProvider>
+                    <TelegramAccountProvider>{children}</TelegramAccountProvider>
+                  </SettingsProvider>
+                </WebSocketProvider>
+              </Suspense>
             </SWRProvider>
             <Toaster />
           </ThemeProvider>

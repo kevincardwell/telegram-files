@@ -9,8 +9,7 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import Link from "next/link";
-import TGDuck16HeyOut from "@/components/animations/tg-duck16_hey_out.json";
-import dynamic from "next/dynamic";
+import LottieAnimation from "@/components/lottie-animation";
 
 interface VersionData {
   version: string;
@@ -22,7 +21,6 @@ interface GitHubReleaseData {
 
 const fetcher = (url: string) => fetch(url).then((res) => res.json());
 
-const Lottie = dynamic(() => import("lottie-react"), { ssr: false });
 export default function About() {
   const { data: apiData, error: apiError } = useSWR<VersionData, Error>(
     "/version",
@@ -55,10 +53,9 @@ export default function About() {
           </CardDescription>
         </CardHeader>
         <CardContent className="relative">
-          <Lottie
+          <LottieAnimation
             className="absolute bottom-3 right-3 h-28 w-28"
-            animationData={TGDuck16HeyOut}
-            loop={true}
+            src="/animations/tg-duck16_hey_out.json"
           />
           <div className="space-y-4">
             <div className="flex flex-col items-center justify-center">

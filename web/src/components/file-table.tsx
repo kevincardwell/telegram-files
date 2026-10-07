@@ -23,10 +23,12 @@ import FileNotFount from "@/components/file-not-found";
 import FileRow, { type FileRowProperties } from "@/components/file-row";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { type TelegramFile } from "@/lib/types";
-import FileViewer from "@/components/file-viewer";
+import dynamic from "next/dynamic";
 import FileFilters from "./file-filters";
 import { Badge } from "@/components/ui/badge";
 import FileBatchControl from "@/components/file-batch-control";
+
+const FileViewer = dynamic(() => import("@/components/file-viewer"));
 
 const COLUMNS: Column[] = [
   {

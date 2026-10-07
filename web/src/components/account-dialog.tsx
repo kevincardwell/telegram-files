@@ -9,9 +9,12 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog";
 import { useTelegramAccount } from "@/hooks/use-telegram-account";
-import ProxysDialog from "@/components/proxys-dialog";
-import AccountCreator from "@/components/account-creator";
 import { toast } from "@/hooks/use-toast";
+import dynamic from "next/dynamic";
+
+// Only needed once the dialog is open (QR code and Lottie live in here).
+const AccountCreator = dynamic(() => import("@/components/account-creator"));
+const ProxysDialog = dynamic(() => import("@/components/proxys-dialog"));
 
 export function AccountDialog({
   children,

@@ -28,9 +28,7 @@ import {
 } from "@/components/ui/input-otp";
 import { useWebSocketMessage } from "@/lib/ws-store";
 import { useTelegramAccount } from "@/hooks/use-telegram-account";
-import TGDuck16Plane from "@/components/animations/tg-duck16_plane.json";
-import TGQRPlane from "@/components/animations/tg-qr-plane.json";
-import dynamic from "next/dynamic";
+import LottieAnimation from "@/components/lottie-animation";
 import QRCodeStyling, { type Options } from "qr-code-styling";
 
 interface AccountCreatorProps {
@@ -39,8 +37,6 @@ interface AccountCreatorProps {
   onCreated?: (id: string) => void;
   onLoginSuccess?: () => void;
 }
-
-const Lottie = dynamic(() => import("lottie-react"), { ssr: false });
 
 export default function AccountCreator({
   isAdd,
@@ -172,10 +168,9 @@ export default function AccountCreator({
   if (!initSuccessfully) {
     return (
       <div className="flex flex-col items-center justify-center space-y-4">
-        <Lottie
+        <LottieAnimation
           className="mb-10 h-28 w-28 md:mb-3"
-          animationData={TGDuck16Plane}
-          loop={true}
+          src="/animations/tg-duck16_plane.json"
         />
         <Button
           className={cn("w-full", debounceIsCreateMutating ? "opacity-50" : "")}
@@ -416,10 +411,9 @@ function QRCode({ link }: { link?: string }) {
     <div className="flex flex-col items-center justify-center space-y-2">
       <div className="relative flex items-center justify-center">
         <div className="overflow-hidden rounded-3xl bg-white" ref={ref} />
-        <Lottie
+        <LottieAnimation
           className="absolute left-1/2 top-1/2 z-10 h-14 w-14 -translate-x-1/2 -translate-y-1/2 transform rounded-full bg-gray-800"
-          animationData={TGQRPlane}
-          loop={true}
+          src="/animations/tg-qr-plane.json"
         />
       </div>
       <div className="rounded-lg bg-white bg-opacity-80 p-1 dark:bg-gray-800">

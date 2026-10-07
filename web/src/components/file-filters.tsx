@@ -34,12 +34,17 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Label } from "@/components/ui/label";
-import { Calendar } from "@/components/ui/calendar";
 import {
   Popover,
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
+import dynamic from "next/dynamic";
+
+// react-day-picker is only needed once the date popover opens.
+const Calendar = dynamic(() =>
+  import("@/components/ui/calendar").then((m) => m.Calendar),
+);
 import { RangeSlider } from "@/components/ui/slider";
 import { cn, split } from "@/lib/utils";
 import { Input } from "@/components/ui/input";

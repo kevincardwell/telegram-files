@@ -1,6 +1,6 @@
 "use client";
 
-import { motion, useAnimation } from "motion/react";
+import { motion, useAnimation } from "framer-motion";
 
 const LayoutPanelTopIcon = () => {
   const controls = useAnimation();

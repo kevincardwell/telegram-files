@@ -4,18 +4,10 @@ import {
   ThemeProvider as NextThemesProvider,
   type ThemeProviderProps,
 } from "next-themes";
-import { useEffect, useState } from "react";
 
+// No "mounted" gate: next-themes sets the theme class before paint itself (with
+// suppressHydrationWarning on <html>), and returning null until mount made the static export
+// render an empty <body>.
 export function ThemeProvider({ children, ...props }: ThemeProviderProps) {
-  const [isMounted, setIsMounted] = useState<boolean>(false);
-
-  useEffect(() => {
-    setIsMounted(true);
-  }, []);
-
-  if (!isMounted) {
-    return null;
-  }
-
   return <NextThemesProvider {...props}>{children}</NextThemesProvider>;
 }

@@ -5,11 +5,13 @@ import { cn } from "@/lib/utils";
 import { VisuallyHidden } from "@radix-ui/react-visually-hidden";
 import { LoaderPinwheel } from "lucide-react";
 import { AnimatePresence, motion } from "framer-motion";
-import FileVideo from "@/components/file-video";
+import dynamic from "next/dynamic";
 import FileInfo from "@/components/mobile/file-info";
 import { type useFiles } from "@/hooks/use-files";
 import useFileSwitch from "@/hooks/use-file-switch";
 import FileImage from "../file-image";
+
+const FileVideo = dynamic(() => import("@/components/file-video"));
 
 type FileDrawerProps = {
   open: boolean;

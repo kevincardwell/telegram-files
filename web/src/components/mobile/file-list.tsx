@@ -3,7 +3,7 @@ import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { PREFETCH_ROWS, useFiles } from "@/hooks/use-files";
 import { useWindowVirtualizer } from "@tanstack/react-virtual";
 import { FileCard } from "@/components/mobile/file-card";
-import FileDrawer from "@/components/mobile/file-drawer";
+import dynamic from "next/dynamic";
 import type { TelegramFile } from "@/lib/types";
 import { fileKey, findWithNeighbours } from "@/lib/utils";
 import FileFilters from "@/components/file-filters";
@@ -11,6 +11,8 @@ import DraggableElement from "@/components/ui/draggable-element";
 import { useLocalStorage } from "@/hooks/use-local-storage";
 import FileNotFount from "@/components/file-not-found";
 import { MobileFileTagsDrawer } from "@/components/file-tags";
+
+const FileDrawer = dynamic(() => import("@/components/mobile/file-drawer"));
 
 interface FileListProps {
   accountId: string;
