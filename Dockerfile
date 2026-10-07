@@ -1,18 +1,17 @@
-FROM gradle:8.10-jdk23-alpine AS api-builder
+FROM gradle:9.8-jdk25-alpine AS api-builder
 
 WORKDIR /app
 
 COPY ./api/build.gradle ./api/settings.gradle ./
 COPY ./api/gradle ./gradle
-RUN gradle dependencies --no-daemon
+RUN gradle dependencies --no-daemon -q
 
 COPY ./api .
 RUN gradle shadowJar --no-daemon && \
-    mkdir -p /app/build/libs && \
     cp /app/build/libs/*.jar /app/api.jar && \
-    jdeps --print-module-deps --ignore-missing-deps /app/api.jar > /app/dependencies.txt
+    jdeps --multi-release 25 --print-module-deps --ignore-missing-deps /app/api.jar > /app/dependencies.txt
 
-FROM eclipse-temurin:23-jdk-alpine AS runtime-builder
+FROM eclipse-temurin:25-jdk-alpine AS runtime-builder
 
 WORKDIR /custom-jre
 
@@ -24,10 +23,9 @@ RUN apk add --no-cache binutils && \
         --strip-debug \
         --no-man-pages \
         --no-header-files \
-        --compress=2 && \
-    apk del binutils
+        --compress=zip-6
 
-FROM node:21-alpine AS web-builder
+FROM node:24-alpine AS web-builder
 
 WORKDIR /web
 
@@ -37,12 +35,12 @@ ENV NEXT_PUBLIC_API_URL=/api \
     SKIP_ENV_VALIDATION=1
 
 COPY ./web/package*.json ./
-RUN npm ci --frozen-lockfile
+RUN npm ci
 
 COPY ./web .
 RUN npm run build
 
-FROM alpine:3.18.12 AS final
+FROM alpine:3.24 AS final
 
 WORKDIR /app
 
@@ -50,15 +48,17 @@ ARG TARGETARCH
 ENV JAVA_HOME=/jre \
     PATH="/jre/bin:$PATH" \
     LANG=C.UTF-8 \
-    NGINX_PORT=80
+    LC_ALL=C.UTF-8 \
+    NGINX_PORT=80 \
+    APP_ROOT=/app/data
 
+# The TDLib JNI library is built against musl: it needs libstdc++, OpenSSL 3 and zlib, no glibc shim.
 RUN addgroup -S tf && \
     adduser -S -G tf tf && \
-    apk add --no-cache nginx wget curl unzip tini su-exec gettext openssl3 libstdc++ gcompat libc6-compat && \
-    rm -rf /tmp/* /var/tmp/* && \
-    touch /run/nginx.pid && \
+    apk add --no-cache nginx curl tini su-exec gettext libstdc++ libssl3 zlib && \
+    touch /run/nginx.pid /etc/nginx/htpasswd && \
     chown -R tf:tf /app /etc/nginx /var/lib/nginx /var/log/nginx /run/nginx.pid && \
-    printf '#!/bin/sh\njava -Djava.library.path=/app/tdlib -cp /app/api.jar telegram.files.Maintain "$@"\n' > /usr/bin/tfm && \
+    printf '#!/bin/sh\nexec java --enable-native-access=ALL-UNNAMED -Djava.library.path=/app/tdlib -cp /app/api.jar telegram.files.Maintain "$@"\n' > /usr/bin/tfm && \
     chmod +x /usr/bin/tfm
 
 COPY --from=runtime-builder --chown=tf:tf /custom-jre/jre /jre

@@ -148,3 +148,6 @@ app/
 !**/.env.example
 api.log.lck
 http-client.private.env.json
+
+.git
+.claude

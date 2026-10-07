@@ -6,9 +6,10 @@ pid /run/nginx.pid;
 events {
     worker_connections 1024;
 }
-# 定义 HTTP 块
 http {
-    # 定义 server 块
+    sendfile on;
+    tcp_nopush on;
+
     server {
         listen ${NGINX_PORT};
 
@@ -17,7 +18,22 @@ http {
 
         include /etc/nginx/mime.types;
 
-        # 定义 WS 的代理规则
+        # Batch actions on thousands of files exceed nginx's 1 MB default.
+        client_max_body_size 8m;
+
+        auth_basic ${AUTH_BASIC};
+        auth_basic_user_file /etc/nginx/htpasswd;
+
+        # Container health check and the PWA manifest (fetched without credentials) stay reachable.
+        location = /api/health {
+            auth_basic off;
+            proxy_pass http://localhost:8080/health;
+        }
+
+        location = /site.webmanifest {
+            auth_basic off;
+        }
+
         location /ws {
             proxy_pass http://localhost:8080;
             proxy_http_version 1.1;
@@ -28,9 +44,10 @@ http {
             proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         }
 
-        # 定义 API 的代理规则
         location /api/ {
             proxy_pass http://localhost:8080/;
+            # Stream file previews straight through instead of spooling them to nginx temp files on disk.
+            proxy_buffering off;
             proxy_set_header Host $host;
             proxy_set_header X-Real-IP $remote_addr;
             proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
@@ -68,7 +85,6 @@ http {
           image/svg+xml
           image/x-icon;
 
-        # 日志配置
         access_log /var/log/nginx/access.log;
         error_log /var/log/nginx/error.log;
     }

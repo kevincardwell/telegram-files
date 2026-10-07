@@ -75,7 +75,8 @@ public class FileRecordRetriever {
 
         Optional<TelegramVerticle> telegramVerticleOptional = TelegramVerticles.get(telegramId);
         if (telegramVerticleOptional.isEmpty()) {
-            return Future.failedFuture("Telegram verticle not found，unable to get the message. telegramId: " + telegramId);
+            // Files of a removed account still list (as "original deleted") instead of failing the whole page.
+            return Future.succeededFuture(Collections.emptyMap());
         }
 
         Map<Long, List<FileRecord>> groupingByChatIdMap = fileRecords.stream()

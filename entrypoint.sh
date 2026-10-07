@@ -33,6 +33,18 @@ setup_permissions() {
     fi
 }
 
+# Optional HTTP basic auth in front of the UI and API: set both AUTH_USERNAME and AUTH_PASSWORD.
+setup_auth() {
+    if [ -n "$AUTH_USERNAME" ] && [ -n "$AUTH_PASSWORD" ]; then
+        printf '%s:%s\n' "$AUTH_USERNAME" "$(printf '%s' "$AUTH_PASSWORD" | mkpasswd -m sha512 -P 0)" > /etc/nginx/htpasswd
+        export AUTH_BASIC='"Telegram Files"'
+        echo "Basic auth enabled for user $AUTH_USERNAME"
+    else
+        : > /etc/nginx/htpasswd
+        export AUTH_BASIC=off
+    fi
+}
+
 start_services() {
     cmd_prefix=""
     if [ "$(id -u)" = "0" ] && [ "$PUID" != "0" ]; then
@@ -41,9 +53,9 @@ start_services() {
 
     echo "Starting Java service..."
     if [ -n "$cmd_prefix" ]; then
-        $cmd_prefix java -jar -Djava.library.path=/app/tdlib /app/api.jar &
+        $cmd_prefix java $JAVA_OPTS --enable-native-access=ALL-UNNAMED -Djava.library.path=/app/tdlib -jar /app/api.jar &
     else
-        java -jar -Djava.library.path=/app/tdlib /app/api.jar &
+        java $JAVA_OPTS --enable-native-access=ALL-UNNAMED -Djava.library.path=/app/tdlib -jar /app/api.jar &
     fi
     JAVA_PID=$!
 
@@ -59,8 +71,10 @@ start_services() {
 # Set up signal handlers
 trap cleanup TERM INT
 
+setup_auth
+
 # Replace nginx.conf.template with environment variables
-envsubst '$NGINX_PORT' < /etc/nginx/nginx.conf.template > /etc/nginx/nginx.conf
+envsubst '$NGINX_PORT $AUTH_BASIC' < /etc/nginx/nginx.conf.template > /etc/nginx/nginx.conf
 
 # Set up permissions
 setup_permissions
