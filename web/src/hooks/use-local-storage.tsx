@@ -1,5 +1,5 @@
 "use client";
-import React, { createContext, useContext, useEffect, useState } from "react";
+import React, { createContext, useContext, useState } from "react";
 
 interface LocalStorageContextType {
   getItem: <T>(key: string, initialValue: T) => T;
@@ -9,25 +9,31 @@ interface LocalStorageContextType {
 
 const LocalStorageContext = createContext<LocalStorageContextType | null>(null);
 
+// Read synchronously on first render: filling the map in an effect made the first render use
+// defaults, so e.g. the file list fetched page 1 twice (defaults, then stored filters).
+function readLocalStorage(): Record<string, any> {
+  const map: Record<string, any> = {};
+  if (typeof window === "undefined") return map;
+  try {
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      if (key) {
+        try {
+          map[key] = JSON.parse(localStorage.getItem(key) ?? "") as unknown;
+        } catch {}
+      }
+    }
+  } catch {
+    // Storage blocked (privacy mode, disabled cookies): fall back to defaults.
+  }
+  return map;
+}
+
 export const LocalStorageProvider: React.FC<{ children: React.ReactNode }> = ({
   children,
 }) => {
-  const [storageMap, setStorageMap] = useState<Record<string, any>>({});
-
-  useEffect(() => {
-    if (typeof window !== "undefined") {
-      const map: Record<string, any> = {};
-      for (let i = 0; i < localStorage.length; i++) {
-        const key = localStorage.key(i);
-        if (key) {
-          try {
-            map[key] = JSON.parse(localStorage.getItem(key) ?? "") as unknown;
-          } catch {}
-        }
-      }
-      setStorageMap(map);
-    }
-  }, []);
+  const [storageMap, setStorageMap] =
+    useState<Record<string, any>>(readLocalStorage);
 
   const getItem = <T,>(key: string, initialValue: T): T => {
     if (key in storageMap) {
@@ -64,7 +70,9 @@ export const LocalStorageProvider: React.FC<{ children: React.ReactNode }> = ({
     setStorageMap((prev) => {
       const newMap = { ...prev };
       delete newMap[key];
-      localStorage.removeItem(key);
+      try {
+        localStorage.removeItem(key);
+      } catch {}
       return newMap;
     });
   };
@@ -90,7 +98,14 @@ export const useLocalStorage = <T,>(
   const value = context.getItem(key, initialValue);
 
   const setValue = (valueOrUpdater: T | ((prev: T) => T)) => {
-    context.setItem(key, valueOrUpdater);
+    context.setItem<T>(
+      key,
+      typeof valueOrUpdater === "function"
+        ? // Updaters see the default, not undefined, when nothing is stored yet.
+          (prev: T | undefined) =>
+            (valueOrUpdater as (prev: T) => T)(prev ?? initialValue)
+        : valueOrUpdater,
+    );
   };
 
   const clearValue = () => context.removeItem(key);

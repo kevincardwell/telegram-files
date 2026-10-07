@@ -114,10 +114,16 @@ export function useFiles(
   const [latestFilesStatus, setLatestFileStatus] = useState<
     Record<string, FileStatusOverride>
   >({});
-  const [filters, setFilters, clearFilters] = useLocalStorage<FileFilter>(
-    "telegramFileListFilter",
+  // The all-files view keeps its own filters so they don't leak into chat views (and back).
+  const [storedFilters, setFilters, clearFilters] = useLocalStorage<FileFilter>(
+    noAccountSpecified ? "telegramAllFilesFilter" : "telegramFileListFilter",
     { ...DEFAULT_FILTERS, offline: noAccountSpecified },
   );
+  // The all-files view only works offline.
+  const filters =
+    noAccountSpecified && !storedFilters.offline
+      ? { ...storedFilters, offline: true }
+      : storedFilters;
   const getKey = (page: number, previousPageData: FileResponse) => {
     const params = new URLSearchParams({
       limit: PAGE_SIZE.toString(),
@@ -274,15 +280,6 @@ export function useFiles(
     return () =>
       document.removeEventListener("visibilitychange", onVisibilityChange);
   }, []);
-
-  useEffect(() => {
-    if (noAccountSpecified && !filters.offline) {
-      setFilters((prev) => ({
-        ...prev,
-        offline: true,
-      }));
-    }
-  }, [filters.offline, noAccountSpecified, setFilters]);
 
   const files = useMemo(() => {
     if (!pages) return [];
