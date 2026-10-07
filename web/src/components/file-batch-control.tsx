@@ -7,7 +7,7 @@ import {
   SquareX,
   StepForward,
 } from "lucide-react";
-import React, { useState } from "react";
+import React, { useMemo, useState } from "react";
 import useSWRMutation from "swr/mutation";
 import { POST } from "@/lib/api";
 import { type TelegramFile } from "@/lib/types";
@@ -39,26 +39,27 @@ export default function FileBatchControl({
   files,
   updateField,
 }: FileBatchControlProps) {
-  const selectedFileObjects = Array.from(selectedFiles)
-    .map((id) => files.find((f) => f.id === id))
-    .filter(Boolean) as TelegramFile[];
+  const filesById = useMemo(
+    () => new Map(files.map((file) => [file.id, file])),
+    [files],
+  );
+  const selectedFileObjects = useMemo(
+    () =>
+      Array.from(selectedFiles)
+        .map((id) => filesById.get(id))
+        .filter(Boolean) as TelegramFile[],
+    [selectedFiles, filesById],
+  );
 
   // Calculate counts for different file states
-  const downloadableCounts = selectedFileObjects.filter(
-    (file) => file.downloadStatus === "idle",
-  ).length;
-  const pausableCounts = selectedFileObjects.filter(
-    (file) => file.downloadStatus === "downloading",
-  ).length;
-  const continuableCounts = selectedFileObjects.filter(
-    (file) => file.downloadStatus === "paused",
-  ).length;
-  const cancelableCounts = selectedFileObjects.filter(
-    (file) => file.downloadStatus === "downloading",
-  ).length;
-  const deletableCounts = selectedFileObjects.filter(
-    (file) => file.downloadStatus === "completed",
-  ).length;
+  const countByStatus = (status: TelegramFile["downloadStatus"]) =>
+    selectedFileObjects.filter((file) => file.downloadStatus === status)
+      .length;
+  const downloadableCounts = countByStatus("idle");
+  const pausableCounts = countByStatus("downloading");
+  const continuableCounts = countByStatus("paused");
+  const cancelableCounts = pausableCounts;
+  const deletableCounts = countByStatus("completed");
   const loadedFiles = selectedFileObjects.filter((file) => file.loaded);
 
   const controlButtons = [
@@ -148,7 +149,7 @@ export default function FileBatchControl({
                 key={button.label}
                 selectedFiles={selectedFiles}
                 setSelectedFiles={setSelectedFiles}
-                files={files}
+                selectedFileObjects={selectedFileObjects}
                 {...button}
               />
             ))}
@@ -178,7 +179,7 @@ interface ControlButtonProps extends React.ButtonHTMLAttributes<HTMLButtonElemen
   showConfirm: boolean;
   selectedFiles: Set<number>;
   setSelectedFiles: (files: Set<number>) => void;
-  files: TelegramFile[];
+  selectedFileObjects: TelegramFile[];
 }
 
 function ControlButton({
@@ -193,13 +194,9 @@ function ControlButton({
   showConfirm,
   selectedFiles,
   setSelectedFiles,
-  files,
+  selectedFileObjects,
 }: ControlButtonProps) {
   const [confirmDialogOpen, setConfirmDialogOpen] = useState(false);
-
-  const selectedFileObjects = Array.from(selectedFiles)
-    .map((id) => files.find((f) => f.id === id))
-    .filter(Boolean) as TelegramFile[];
 
   // Calculate valid and invalid files based on the filter
   const validFiles = selectedFileObjects.filter(filter);
