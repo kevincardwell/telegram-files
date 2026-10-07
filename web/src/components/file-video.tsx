@@ -384,6 +384,8 @@ const FileVideo = ({
   const [previewTime, setPreviewTime] = useState(0);
   const [previewPos, setPreviewPos] = useState(0);
   const [isPreviewReady, setIsPreviewReady] = useState(false);
+  // The hover-preview <video> is a second request for the same file; mount it on first hover.
+  const [previewMounted, setPreviewMounted] = useState(false);
   const [error, setError] = useState(false);
   const [errorMessage, setErrorMessage] = useState("");
   const [formatWarning, setFormatWarning] = useState<string | null>(null);
@@ -402,25 +404,6 @@ const FileVideo = ({
       );
     }
   }, [mimeType]);
-
-  useEffect(() => {
-    const video = videoRef.current;
-    const previewVideo = previewVideoRef.current;
-    if (!video || !previewVideo) return;
-
-    const handleLoadedMetadata = () => {
-      setDuration(video.duration);
-      setIsPreviewReady(true);
-    };
-
-    video.addEventListener("loadedmetadata", handleLoadedMetadata);
-    previewVideo.addEventListener("loadedmetadata", handleLoadedMetadata);
-
-    return () => {
-      video.removeEventListener("loadedmetadata", handleLoadedMetadata);
-      previewVideo.removeEventListener("loadedmetadata", handleLoadedMetadata);
-    };
-  }, []);
 
   useEffect(() => {
     const video = videoRef.current;
@@ -444,7 +427,7 @@ const FileVideo = ({
   const captureVideoFrame = () => {
     const previewVideo = previewVideoRef.current;
     const canvas = canvasRef.current;
-    if (!previewVideo || !canvas || !isPreviewReady) return;
+    if (!previewVideo || !canvas || previewVideo.readyState < 2) return;
 
     const context = canvas.getContext("2d");
     if (!context) return;
@@ -456,14 +439,6 @@ const FileVideo = ({
     // Draw the current frame
     context.drawImage(previewVideo, 0, 0, canvas.width, canvas.height);
   };
-
-  useEffect(() => {
-    if (showPreview) {
-      const timeoutId = setTimeout(captureVideoFrame, 150); // Add slight delay for frame to load
-      return () => clearTimeout(timeoutId);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [previewTime, showPreview]);
 
   const handleSkipForward = () => {
     if (videoRef.current) {
@@ -479,6 +454,7 @@ const FileVideo = ({
 
   const handleProgressBarHover = (e: React.MouseEvent) => {
     if (isMobile) return;
+    setPreviewMounted(true);
 
     const progressBar = progressBarRef.current;
     const previewVideo = previewVideoRef.current;
@@ -648,14 +624,24 @@ const FileVideo = ({
         playsInline
         className={cn("max-h-[calc(100vh-5rem)] w-full", className)}
         onTimeUpdate={handleTimeUpdate}
+        onLoadedMetadata={(e) => {
+          setDuration(e.currentTarget.duration);
+          setIsPreviewReady(true);
+        }}
       >
         <source src={url} type={mimeType} />
         Your browser does not support this video format
       </video>
 
       {/* Hidden video for preview */}
-      {!isMobile && (
-        <video ref={previewVideoRef} className="hidden" preload="auto">
+      {!isMobile && previewMounted && (
+        <video
+          ref={previewVideoRef}
+          className="hidden"
+          preload="metadata"
+          muted
+          onSeeked={captureVideoFrame}
+        >
           <source src={url} type={mimeType} />
         </video>
       )}
