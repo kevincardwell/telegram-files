@@ -46,6 +46,7 @@ export type TelegramFile = {
   size: number;
   downloadedSize: number;
   thumbnail?: string;
+  thumbnailUniqueId?: string | null;
   thumbnailFile?: Thumbnail;
   downloadStatus: DownloadStatus;
   date: number;

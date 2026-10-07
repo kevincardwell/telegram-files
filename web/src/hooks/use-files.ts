@@ -9,7 +9,7 @@ import {
 import useSWRInfinite from "swr/infinite";
 import { WebSocketMessageType } from "@/lib/websocket-types";
 import { useLocalStorage } from "@/hooks/use-local-storage";
-import { useDebounce, useDebouncedCallback } from "use-debounce";
+import { useDebounce } from "use-debounce";
 import { useWebSocketMessage } from "@/lib/ws-store";
 
 const DEFAULT_FILTERS: FileFilter = {
@@ -45,6 +45,27 @@ const mergedRows = new WeakMap<
   FileStatusOverride,
   { file: TelegramFile; merged: TelegramFile }
 >();
+
+function patchThumbnail(
+  pages: FileResponse[],
+  thumbnailUniqueId: string,
+  thumbnailFile: Thumbnail,
+): FileResponse[] {
+  let changed = false;
+  const patched = pages.map((page) => {
+    if (!page.files.some((f) => f.thumbnailUniqueId === thumbnailUniqueId)) {
+      return page;
+    }
+    changed = true;
+    return {
+      ...page,
+      files: page.files.map((f) =>
+        f.thumbnailUniqueId === thumbnailUniqueId ? { ...f, thumbnailFile } : f,
+      ),
+    };
+  });
+  return changed ? patched : pages;
+}
 
 function mergeOverride(
   file: TelegramFile,
@@ -149,12 +170,6 @@ export function useFiles(
     maxWait: 1000,
   });
 
-  // A thumbnail finished downloading in the background; refetch so the list picks up the
-  // crisp thumbnailFile. Debounced to coalesce the bursts that happen while browsing.
-  const debouncedThumbnailRefetch = useDebouncedCallback(() => {
-    void mutate();
-  }, 1500);
-
   useWebSocketMessage((message) => {
     if (message.type !== WebSocketMessageType.FILE_STATUS) {
       return;
@@ -173,7 +188,15 @@ export function useFiles(
     };
 
     if (data.type === "thumbnail") {
-      debouncedThumbnailRefetch();
+      // A thumbnail finished downloading: patch it into the loaded files that reference it.
+      // Backends that don't send thumbnailFile are ignored rather than refetching every page.
+      const thumbnailFile = data.thumbnailFile;
+      if (thumbnailFile) {
+        void mutate(
+          (pages) => pages && patchThumbnail(pages, data.uniqueId, thumbnailFile),
+          { revalidate: false },
+        );
+      }
       return;
     }
 
