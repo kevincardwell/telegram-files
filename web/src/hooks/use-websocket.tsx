@@ -6,6 +6,7 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useMemo,
   useState,
 } from "react";
 import useWebSocket, { ReadyState } from "react-use-websocket";
@@ -14,20 +15,21 @@ import {
   type WebSocketMessage,
   WebSocketMessageType,
 } from "@/lib/websocket-types";
-import { useToast } from "./use-toast";
-import { useDebounce } from "use-debounce";
+import { toast } from "./use-toast";
 import { getWsUrl } from "@/lib/api";
 import { useSearchParams } from "next/navigation";
 import { useSWRConfig } from "swr";
+import { dispatchMessage } from "@/lib/ws-store";
 
 const WS_URL = `${getWsUrl()}`;
 
+// Only connection-level state lives in this context; it changes rarely. Message streams are read
+// through the store hooks in lib/ws-store (useFileProgress, useAccountDownloadSpeed,
+// useWebSocketMessage).
 interface WebsocketContextType {
   sendMessage: (message: WebSocketMessage) => void;
-  lastJsonMessage: WebSocketMessage | null;
   connectionStatus: string;
   isReady: boolean;
-  accountDownloadSpeed: number;
   reconnect: () => void;
   telegramConnectionState: string | null;
 }
@@ -44,37 +46,54 @@ export const WebSocketProvider: React.FC<WebSocketProviderProps> = ({
   children,
 }) => {
   const searchParams = useSearchParams();
-  const [isReady, setIsReady] = useState(false);
-  const [accountDownloadSpeed, setAccountDownloadSpeed] = useState({
-    speed: 0,
-    lastDownloadedSize: 0,
-    lastTimestamp: 0,
-  });
-  const { toast } = useToast();
   const { mutate } = useSWRConfig();
-  const [debounceSpeed] = useDebounce(accountDownloadSpeed.speed, 300, {
-    leading: true,
-    maxWait: 1000,
-  });
 
   const [reconnectNonce, setReconnectNonce] = useState(0);
   const [telegramConnectionState, setTelegramConnectionState] = useState<
     string | null
   >(null);
 
-  const { sendMessage, lastJsonMessage, readyState } =
-    useWebSocket<WebSocketMessage>(
-      `${WS_URL}?telegramId=${searchParams.get("id") ?? ""}&_r=${reconnectNonce}`,
-      {
-        // Keep retrying (essentially) forever with exponential backoff capped at 30s, and also
-        // retry on error events — so a transient outage recovers on its own instead of giving up.
-        shouldReconnect: () => true,
-        reconnectAttempts: 999,
-        reconnectInterval: (attemptNumber) =>
-          Math.min(1000 * 2 ** attemptNumber, 30000),
-        retryOnError: true,
+  const { sendMessage, readyState } = useWebSocket(
+    `${WS_URL}?telegramId=${searchParams.get("id") ?? ""}&_r=${reconnectNonce}`,
+    {
+      // Keep retrying (essentially) forever with exponential backoff capped at 30s, and also
+      // retry on error events — so a transient outage recovers on its own instead of giving up.
+      shouldReconnect: () => true,
+      reconnectAttempts: 999,
+      reconnectInterval: (attemptNumber) =>
+        Math.min(1000 * 2 ** attemptNumber, 30000),
+      retryOnError: true,
+      // Never let react-use-websocket store lastMessage: it does so with flushSync, which would
+      // re-render this provider (and every consumer) synchronously on each progress tick.
+      filter: () => false,
+      onMessage: (event: MessageEvent) => {
+        let payload: WebSocketMessage;
+        try {
+          payload = JSON.parse(event.data as string) as WebSocketMessage;
+        } catch (error) {
+          console.error("Failed to parse WebSocket message:", error);
+          return;
+        }
+        switch (payload.type) {
+          case WebSocketMessageType.AUTHORIZATION:
+            void mutate("/telegrams");
+            break;
+          case WebSocketMessageType.CONNECTION:
+            setTelegramConnectionState(
+              (payload.data as { state?: string })?.state ?? null,
+            );
+            break;
+          case WebSocketMessageType.ERROR:
+            toast({
+              variant: "error",
+              description: (payload.data as TelegramError).message,
+            });
+            break;
+        }
+        dispatchMessage(payload);
       },
-    );
+    },
+  );
 
   // Force a fresh connection (resets the backoff/attempt counter); used by the manual
   // "reconnect" affordance and when the network/focus comes back.
@@ -107,78 +126,7 @@ export const WebSocketProvider: React.FC<WebSocketProviderProps> = ({
     [ReadyState.UNINSTANTIATED]: "Uninstantiated",
   }[readyState];
 
-  useEffect(() => {
-    setIsReady(readyState === ReadyState.OPEN);
-  }, [readyState]);
-
-  useEffect(() => {
-    if (lastJsonMessage !== null) {
-      // console.log(
-      //   `🐄: ${JSON.stringify(lastJsonMessage, null, 2)}`,
-      // )
-      try {
-        const payload: WebSocketMessage = lastJsonMessage;
-        const timestamp = payload.timestamp;
-        switch (payload.type) {
-          case WebSocketMessageType.AUTHORIZATION:
-            void mutate("/telegrams");
-            break;
-          case WebSocketMessageType.CONNECTION:
-            setTelegramConnectionState(
-              (payload.data as { state?: string })?.state ?? null,
-            );
-            break;
-          case WebSocketMessageType.ERROR:
-            toast({
-              variant: "error",
-              description: (payload.data as TelegramError).message,
-            });
-            break;
-          case WebSocketMessageType.FILE_DOWNLOAD:
-            const { downloadedSize, totalCount } = payload.data as {
-              totalSize: number;
-              totalCount: number;
-              downloadedSize: number;
-            };
-            if (totalCount === 0) {
-              setAccountDownloadSpeed({
-                speed: 0,
-                lastDownloadedSize: 0,
-                lastTimestamp: 0,
-              });
-              return;
-            }
-            setAccountDownloadSpeed((prev) => {
-              const state = {
-                lastTimestamp: timestamp,
-                lastDownloadedSize: downloadedSize,
-              };
-              const timeDiff = (timestamp - prev.lastTimestamp) / 1000;
-              if (
-                prev.lastTimestamp === 0 ||
-                timeDiff <= 0 ||
-                downloadedSize <= prev.lastDownloadedSize
-              ) {
-                return {
-                  ...state,
-                  speed: prev.speed,
-                };
-              }
-
-              const speed =
-                (downloadedSize - prev.lastDownloadedSize) / timeDiff;
-              return {
-                speed,
-                lastDownloadedSize: downloadedSize,
-                lastTimestamp: timestamp,
-              };
-            });
-        }
-      } catch (error) {
-        console.error("Failed to parse WebSocket message:", error);
-      }
-    }
-  }, [lastJsonMessage, mutate, toast]);
+  const isReady = readyState === ReadyState.OPEN;
 
   const sendWebSocketMessage = useCallback(
     (message: WebSocketMessage) => {
@@ -189,18 +137,25 @@ export const WebSocketProvider: React.FC<WebSocketProviderProps> = ({
     [isReady, sendMessage],
   );
 
+  const value = useMemo(
+    () => ({
+      sendMessage: sendWebSocketMessage,
+      connectionStatus,
+      isReady,
+      reconnect,
+      telegramConnectionState,
+    }),
+    [
+      sendWebSocketMessage,
+      connectionStatus,
+      isReady,
+      reconnect,
+      telegramConnectionState,
+    ],
+  );
+
   return (
-    <WebSocketContext.Provider
-      value={{
-        sendMessage: sendWebSocketMessage,
-        lastJsonMessage,
-        connectionStatus,
-        isReady,
-        accountDownloadSpeed: debounceSpeed,
-        reconnect,
-        telegramConnectionState,
-      }}
-    >
+    <WebSocketContext.Provider value={value}>
       {children}
     </WebSocketContext.Provider>
   );

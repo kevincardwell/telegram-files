@@ -1,5 +1,11 @@
 "use client";
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Button } from "@/components/ui/button";
 import { LoaderPinwheel, SquareChevronLeft, WandSparkles } from "lucide-react";
@@ -14,7 +20,7 @@ import TableColumnFilter, {
 } from "@/components/table-column-filter";
 import { cn } from "@/lib/utils";
 import FileNotFount from "@/components/file-not-found";
-import FileRow from "@/components/file-row";
+import FileRow, { type FileRowProperties } from "@/components/file-row";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { type TelegramFile } from "@/lib/types";
 import FileViewer from "@/components/file-viewer";
@@ -176,15 +182,27 @@ export function FileTable({
     }
   };
 
-  const handleSelectFile = (fileId: number) => {
-    const newSelected = new Set(selectedFiles);
-    if (newSelected.has(fileId)) {
-      newSelected.delete(fileId);
-    } else {
-      newSelected.add(fileId);
-    }
-    setSelectedFiles(newSelected);
-  };
+  const handleSelectFile = useCallback((fileId: number) => {
+    setSelectedFiles((prev) => {
+      const newSelected = new Set(prev);
+      if (newSelected.has(fileId)) {
+        newSelected.delete(fileId);
+      } else {
+        newSelected.add(fileId);
+      }
+      return newSelected;
+    });
+  }, []);
+
+  const handleFileClick = useCallback((file: TelegramFile) => {
+    setCurrentViewFile(file);
+    setViewerOpen(true);
+  }, []);
+
+  const rowProperties = useMemo<FileRowProperties>(
+    () => ({ rowHeight, dynamicClass, columns }),
+    [rowHeight, dynamicClass, columns],
+  );
 
   return (
     <>
@@ -294,27 +312,15 @@ export function FileTable({
                   return (
                     <FileRow
                       index={virtualRow.index}
-                      className={cn(
-                        "absolute left-0 top-0 flex w-full items-center",
-                      )}
-                      style={{
-                        height: `${virtualRow.size}px`,
-                        transform: `translateY(${virtualRow.start}px)`,
-                      }}
+                      start={virtualRow.start}
+                      size={virtualRow.size}
                       ref={rowVirtual.measureElement}
                       file={file}
                       updateField={updateField}
                       checked={selectedFiles.has(file.id)}
-                      onCheckedChange={() => handleSelectFile(file.id)}
-                      onFileClick={() => {
-                        setCurrentViewFile(file);
-                        setViewerOpen(true);
-                      }}
-                      properties={{
-                        rowHeight: rowHeight,
-                        dynamicClass,
-                        columns,
-                      }}
+                      onSelect={handleSelectFile}
+                      onFileClick={handleFileClick}
+                      properties={rowProperties}
                       key={`${file.messageId}-${file.uniqueId}-${virtualRow.index}`}
                     />
                   );

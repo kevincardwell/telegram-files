@@ -11,6 +11,7 @@ import {
 import { TooltipWrapper } from "./ui/tooltip";
 import { Badge } from "@/components/ui/badge";
 import { useWebsocket } from "@/hooks/use-websocket";
+import { useAccountDownloadSpeed } from "@/lib/ws-store";
 import { useTelegramAccount } from "@/hooks/use-telegram-account";
 import { SettingsDialog } from "@/components/settings-dialog";
 import prettyBytes from "pretty-bytes";
@@ -19,18 +20,34 @@ import Link from "next/link";
 import TelegramIcon from "@/components/telegram-icon";
 import AutomationDialog from "@/components/automation-dialog";
 import useIsMobile from "@/hooks/use-is-mobile";
-import { useState } from "react";
+import { type ReactNode, useState } from "react";
 import { Button } from "@/components/ui/button";
 import ThemeToggleButton from "@/components/theme-toggle-button";
 import AccountSelect from "@/components/account-select";
 import { useSearchParams } from "next/navigation";
 import { useSettings } from "@/hooks/use-settings";
 
+// Isolated so the ~1/s speed updates re-render only this badge, not the whole header.
+export function AccountDownloadSpeed({ fallback }: { fallback?: ReactNode }) {
+  const speed = useAccountDownloadSpeed();
+  const { settings } = useSettings();
+  if (speed === 0) return fallback ?? null;
+  return (
+    <TooltipWrapper content="Current account download speed">
+      <div className="flex items-center gap-2 overflow-hidden text-sm text-muted-foreground">
+        <span className="flex-1 text-nowrap">
+          {`${prettyBytes(speed, { bits: settings?.speedUnits === "bits" })}/s`}
+        </span>
+        <Download className="h-4 w-4 flex-shrink-0" />
+      </div>
+    </TooltipWrapper>
+  );
+}
+
 export function Header() {
   const useTelegramAccountProps = useTelegramAccount();
-  const { connectionStatus, accountDownloadSpeed, reconnect, telegramConnectionState } =
+  const { connectionStatus, reconnect, telegramConnectionState } =
     useWebsocket();
-  const { settings } = useSettings();
   const isMobile = useIsMobile();
   const [showMore, setShowMore] = useState(false);
   const searchParams = useSearchParams();
@@ -59,16 +76,7 @@ export function Header() {
           </div>
 
           <div className="flex items-center gap-2">
-            {accountDownloadSpeed !== 0 && (
-              <TooltipWrapper content="Current account download speed">
-                <div className="flex items-center gap-2 overflow-hidden text-sm text-muted-foreground">
-                  <span className="flex-1 text-nowrap">
-                    {`${prettyBytes(accountDownloadSpeed, { bits: settings?.speedUnits === 'bits' })}/s`}
-                  </span>
-                  <Download className="h-4 w-4 flex-shrink-0" />
-                </div>
-              </TooltipWrapper>
-            )}
+            <AccountDownloadSpeed />
 
             {connectionStatus && (
               <TooltipWrapper

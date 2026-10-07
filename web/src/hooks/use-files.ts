@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   type DownloadStatus,
   type FileFilter,
@@ -7,10 +7,10 @@ import {
   type TransferStatus,
 } from "@/lib/types";
 import useSWRInfinite from "swr/infinite";
-import { useWebsocket } from "@/hooks/use-websocket";
 import { WebSocketMessageType } from "@/lib/websocket-types";
 import { useLocalStorage } from "@/hooks/use-local-storage";
 import { useDebounce, useDebouncedCallback } from "use-debounce";
+import { useWebSocketMessage } from "@/lib/ws-store";
 
 const DEFAULT_FILTERS: FileFilter = {
   search: "",
@@ -27,6 +27,46 @@ type FileResponse = {
   nextFromMessageId: number;
 };
 
+type FileStatusOverride = {
+  fileId: number;
+  downloadStatus: DownloadStatus;
+  localPath?: string;
+  completionDate?: number;
+  downloadedSize: number;
+  transferStatus?: TransferStatus;
+  thumbnailFile?: Thumbnail;
+  removed?: boolean;
+};
+
+// Merged rows are cached per (server file, override) pair so a status event only creates new
+// objects for the file it is about; every other row keeps its identity and memoised rows skip
+// re-rendering.
+const mergedRows = new WeakMap<
+  FileStatusOverride,
+  { file: TelegramFile; merged: TelegramFile }
+>();
+
+function mergeOverride(
+  file: TelegramFile,
+  override: FileStatusOverride | undefined,
+): TelegramFile {
+  if (!override) return file;
+  const hit = mergedRows.get(override);
+  if (hit?.file === file) return hit.merged;
+  const merged = {
+    ...file,
+    id: override.fileId ?? file.id,
+    downloadStatus: override.downloadStatus ?? file.downloadStatus,
+    localPath: override.localPath ?? file.localPath,
+    completionDate: override.completionDate ?? file.completionDate,
+    downloadedSize: override.downloadedSize ?? file.downloadedSize,
+    transferStatus: override.transferStatus ?? file.transferStatus,
+    thumbnailFile: override.thumbnailFile ?? file.thumbnailFile,
+  };
+  mergedRows.set(override, { file, merged });
+  return merged;
+}
+
 export function useFiles(
   accountId: string,
   chatId: string,
@@ -37,21 +77,8 @@ export function useFiles(
   const url = noAccountSpecified
     ? "/files"
     : `/telegram/${accountId}/chat/${chatId}/files`;
-  const { lastJsonMessage } = useWebsocket();
   const [latestFilesStatus, setLatestFileStatus] = useState<
-    Record<
-      string,
-      {
-        fileId: number;
-        downloadStatus: DownloadStatus;
-        localPath?: string;
-        completionDate?: number;
-        downloadedSize: number;
-        transferStatus?: TransferStatus;
-        thumbnailFile?: Thumbnail;
-        removed?: boolean;
-      }
-    >
+    Record<string, FileStatusOverride>
   >({});
   const [filters, setFilters, clearFilters] = useLocalStorage<FileFilter>(
     "telegramFileListFilter",
@@ -128,11 +155,11 @@ export function useFiles(
     void mutate();
   }, 1500);
 
-  useEffect(() => {
-    if (lastJsonMessage?.type !== WebSocketMessageType.FILE_STATUS) {
+  useWebSocketMessage((message) => {
+    if (message.type !== WebSocketMessageType.FILE_STATUS) {
       return;
     }
-    const data = lastJsonMessage.data as {
+    const data = message.data as {
       fileId: number;
       uniqueId: string;
       downloadStatus: DownloadStatus;
@@ -182,7 +209,7 @@ export function useFiles(
         thumbnailFile: data.thumbnailFile ?? prev[data.uniqueId]?.thumbnailFile,
       },
     }));
-  }, [lastJsonMessage]);
+  });
 
   useEffect(() => {
     if (noAccountSpecified && !filters.offline) {
@@ -201,27 +228,7 @@ export function useFiles(
         if (file.originalDeleted && latestFilesStatus[file.uniqueId]?.removed) {
           return;
         }
-        const merged = {
-          ...file,
-          id: latestFilesStatus[file.uniqueId]?.fileId ?? file.id,
-          downloadStatus:
-            latestFilesStatus[file.uniqueId]?.downloadStatus ??
-            file.downloadStatus,
-          localPath:
-            latestFilesStatus[file.uniqueId]?.localPath ?? file.localPath,
-          completionDate:
-            latestFilesStatus[file.uniqueId]?.completionDate ??
-            file.completionDate,
-          downloadedSize:
-            latestFilesStatus[file.uniqueId]?.downloadedSize ??
-            file.downloadedSize,
-          transferStatus:
-            latestFilesStatus[file.uniqueId]?.transferStatus ??
-            file.transferStatus,
-          thumbnailFile:
-            latestFilesStatus[file.uniqueId]?.thumbnailFile ??
-            file.thumbnailFile,
-        };
+        const merged = mergeOverride(file, latestFilesStatus[file.uniqueId]);
         // Live WebSocket updates can change a row's status after it was fetched. When a status
         // filter is active, drop rows that no longer match so the filtered view stays consistent
         // (otherwise e.g. a "downloading" filter keeps showing files that just completed).
@@ -284,24 +291,24 @@ export function useFiles(
     await setSize(1);
   };
 
-  const updateField = async (
-    uniqueId: string,
-    patch: Partial<TelegramFile>,
-  ) => {
-    await mutate((pages) => {
-      if (!pages) return [];
+  const updateField = useCallback(
+    async (uniqueId: string, patch: Partial<TelegramFile>) => {
+      await mutate((pages) => {
+        if (!pages) return [];
 
-      return pages.map((page) => {
-        const newFiles = page.files.map((file) =>
-          file.uniqueId === uniqueId ? { ...file, ...patch } : file,
-        );
-        return {
-          ...page,
-          files: newFiles,
-        };
-      });
-    }, false);
-  };
+        return pages.map((page) => {
+          const newFiles = page.files.map((file) =>
+            file.uniqueId === uniqueId ? { ...file, ...patch } : file,
+          );
+          return {
+            ...page,
+            files: newFiles,
+          };
+        });
+      }, false);
+    },
+    [mutate],
+  );
 
   return {
     size,

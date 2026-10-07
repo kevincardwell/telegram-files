@@ -1,8 +1,8 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import useSWRMutation from "swr/mutation";
 import type { TelegramApiResult } from "@/lib/types";
 import { telegramApi, type TelegramApiArg } from "@/lib/api";
-import { useWebsocket } from "@/hooks/use-websocket";
+import { useWebSocketMessage } from "@/lib/ws-store";
 
 export function useTelegramMethod() {
   const pendingRequestsRef = useRef<
@@ -22,24 +22,11 @@ export function useTelegramMethod() {
 
   const [pendingCount, setPendingCount] = useState(0); // 用 state 追踪 ref 的 size
 
-  const { lastJsonMessage } = useWebsocket();
-
-  const [lastMethod, setLastMethod] = useState<{
-    code: string | null;
-    result: unknown;
-  }>({
-    code: null,
-    result: null,
-  });
-
-  useEffect(() => {
-    if (!lastJsonMessage?.code) return;
-
-    const code = lastJsonMessage.code;
-    const data = lastJsonMessage.data;
-
+  // A ref, not state: every file row uses this hook, and method results must not re-render them.
+  useWebSocketMessage((message) => {
+    if (!message.code) return;
+    const { code, data } = message;
     lastResultRef.current = { code, result: data };
-    setLastMethod({ code, result: data }); // 同步 state
 
     const pendingRequest = pendingRequestsRef.current.get(code);
     if (pendingRequest) {
@@ -47,23 +34,7 @@ export function useTelegramMethod() {
       pendingRequestsRef.current.delete(code);
       setPendingCount(pendingRequestsRef.current.size);
     }
-  }, [lastJsonMessage]);
-
-  useEffect(() => {
-    if (!lastJsonMessage?.code) return;
-
-    const code = lastJsonMessage.code;
-    const data = lastJsonMessage.data;
-
-    lastResultRef.current = { code, result: data };
-
-    const pendingRequest = pendingRequestsRef.current.get(code);
-    if (pendingRequest) {
-      pendingRequest.resolve(data);
-      pendingRequestsRef.current.delete(code);
-      setPendingCount(pendingRequestsRef.current.size); // 更新 state
-    }
-  }, [lastJsonMessage]);
+  });
 
   const { trigger, isMutating } = useSWRMutation<
     TelegramApiResult,
@@ -74,43 +45,37 @@ export function useTelegramMethod() {
 
   const executeMethod = useCallback(
     async (arg: TelegramApiArg): Promise<any> => {
-      try {
-        const result = await trigger(arg);
-        const { code } = result;
+      const result = await trigger(arg);
+      const { code } = result;
 
-        if (lastResultRef.current.code === code) {
-          return lastResultRef.current.result;
-        }
+      if (lastResultRef.current.code === code) {
+        return lastResultRef.current.result;
+      }
 
-        return new Promise((resolve, reject) => {
-          const timeoutId = setTimeout(() => {
+      return new Promise((resolve, reject) => {
+        const timeoutId = setTimeout(() => {
+          pendingRequestsRef.current.delete(code);
+          setPendingCount(pendingRequestsRef.current.size); // 更新 state
+          reject(new Error(`Request timeout for code: ${code}`));
+        }, 30000);
+
+        pendingRequestsRef.current.set(code, {
+          resolve: (value) => {
+            clearTimeout(timeoutId);
             pendingRequestsRef.current.delete(code);
             setPendingCount(pendingRequestsRef.current.size); // 更新 state
-            reject(new Error(`Request timeout for code: ${code}`));
-          }, 30000);
-
-          pendingRequestsRef.current.set(code, {
-            resolve: (value) => {
-              clearTimeout(timeoutId);
-              pendingRequestsRef.current.delete(code);
-              setPendingCount(pendingRequestsRef.current.size); // 更新 state
-              resolve(value);
-            },
-            reject: (reason) => {
-              clearTimeout(timeoutId);
-              pendingRequestsRef.current.delete(code);
-              setPendingCount(pendingRequestsRef.current.size); // 更新 state
-              reject(
-                reason instanceof Error ? reason : new Error(String(reason)),
-              );
-            },
-          });
-
-          setPendingCount(pendingRequestsRef.current.size); // 更新 state
+            resolve(value);
+          },
+          reject: (reason) => {
+            clearTimeout(timeoutId);
+            pendingRequestsRef.current.delete(code);
+            setPendingCount(pendingRequestsRef.current.size); // 更新 state
+            reject(reason instanceof Error ? reason : new Error(String(reason)));
+          },
         });
-      } catch (error) {
-        throw error;
-      }
+
+        setPendingCount(pendingRequestsRef.current.size); // 更新 state
+      });
     },
     [trigger],
   );
@@ -121,8 +86,6 @@ export function useTelegramMethod() {
     executeMethod,
     triggerMethod: trigger,
     isMethodExecuting,
-    lastMethodCode: lastMethod.code,
-    lastMethodResult: lastMethod.result,
     pendingRequestsCount: pendingCount,
   };
 }

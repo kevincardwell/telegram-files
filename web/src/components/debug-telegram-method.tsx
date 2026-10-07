@@ -1,4 +1,5 @@
 import { useTelegramMethod } from "@/hooks/use-telegram-method";
+import { useWebSocketMessage } from "@/lib/ws-store";
 import useSWR from "swr";
 import { request } from "@/lib/api";
 import { useMemo, useState } from "react";
@@ -42,8 +43,16 @@ interface TelegramMethodParameters {
 }
 
 export default function DebugTelegramMethod() {
-  const { triggerMethod, isMethodExecuting, lastMethodCode, lastMethodResult } =
-    useTelegramMethod();
+  const { triggerMethod, isMethodExecuting } = useTelegramMethod();
+  const [lastMethod, setLastMethod] = useState<{
+    code: string;
+    result: unknown;
+  }>();
+  useWebSocketMessage((message) => {
+    if (message.code) setLastMethod({ code: message.code, result: message.data });
+  });
+  const lastMethodCode = lastMethod?.code;
+  const lastMethodResult = lastMethod?.result;
   const [isDeMethodExecuting] = useDebounce(isMethodExecuting, 500, {
     leading: true,
   });

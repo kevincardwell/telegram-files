@@ -1,9 +1,8 @@
 import { LoaderPinwheel } from "lucide-react";
-import React, { useEffect, useState } from "react";
+import React, { useCallback, useEffect, useState } from "react";
 import { useFiles } from "@/hooks/use-files";
 import { useWindowVirtualizer } from "@tanstack/react-virtual";
 import { FileCard } from "@/components/mobile/file-card";
-import { cn } from "@/lib/utils";
 import FileDrawer from "@/components/mobile/file-drawer";
 import type { TelegramFile } from "@/lib/types";
 import { isEqual } from "lodash";
@@ -45,6 +44,16 @@ export default function FileList({ accountId, chatId, link }: FileListProps) {
     hasMore,
     handleLoadMore,
   } = useFilesProps;
+
+  const handleFileClick = useCallback((file: TelegramFile) => {
+    setCurrentViewFile(file);
+    setIsDrawerOpen(true);
+  }, []);
+
+  const handleFileTagsClick = useCallback((file: TelegramFile) => {
+    setCurrentTagsFile(file);
+    setIsTagsDrawerOpen(true);
+  }, []);
 
   const rowVirtual = useWindowVirtualizer({
     count: hasMore ? files.length + 1 : files.length,
@@ -180,23 +189,13 @@ export default function FileList({ accountId, chatId, link }: FileListProps) {
               <FileCard
                 key={`${file.id}-${file.uniqueId}-${virtualRow.index}`}
                 index={virtualRow.index}
-                className={cn("absolute left-0 top-0 flex w-full items-center")}
-                style={{
-                  height: `${virtualRow.size}px`,
-                  transform: `translateY(${virtualRow.start}px)`,
-                }}
+                start={virtualRow.start}
+                size={virtualRow.size}
                 ref={rowVirtual.measureElement}
                 file={file}
-                onFileClick={() => {
-                  setCurrentViewFile(file);
-                  setIsDrawerOpen(true);
-                }}
-                onFileTagsClick={() => {
-                  setCurrentTagsFile(file);
-                  setIsTagsDrawerOpen(true);
-                }}
+                onFileClick={handleFileClick}
+                onFileTagsClick={handleFileTagsClick}
                 layout={layout}
-                {...useFilesProps}
               />
             );
           })}

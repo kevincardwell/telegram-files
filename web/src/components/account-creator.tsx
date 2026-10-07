@@ -26,7 +26,7 @@ import {
   InputOTPGroup,
   InputOTPSlot,
 } from "@/components/ui/input-otp";
-import { useWebsocket } from "@/hooks/use-websocket";
+import { useWebSocketMessage } from "@/lib/ws-store";
 import { useTelegramAccount } from "@/hooks/use-telegram-account";
 import TGDuck16Plane from "@/components/animations/tg-duck16_plane.json";
 import TGQRPlane from "@/components/animations/tg-qr-plane.json";
@@ -51,7 +51,6 @@ export default function AccountCreator({
   const { triggerMethod, isMethodExecuting } = useTelegramMethod();
   const { toast } = useToast();
   const { mutate } = useSWRConfig();
-  const { lastJsonMessage } = useWebsocket();
   const { account, resetAccount } = useTelegramAccount();
   const [initSuccessfully, setInitSuccessfully] = useState(false);
   const [authState, setAuthState] = useState<number | undefined>(undefined);
@@ -140,13 +139,11 @@ export default function AccountCreator({
     }
   }, [account, handleAuthState, initSuccessfully, isAdd, resetAccount]);
 
-  useEffect(() => {
-    if (!lastJsonMessage) return;
-
-    if (lastJsonMessage.type === WebSocketMessageType.AUTHORIZATION) {
-      handleAuthState(lastJsonMessage.data as TelegramObject);
+  useWebSocketMessage((message) => {
+    if (message.type === WebSocketMessageType.AUTHORIZATION) {
+      handleAuthState(message.data as TelegramObject);
     }
-  }, [handleAuthState, lastJsonMessage]);
+  });
 
   useEffect(() => {
     if (phoneNumber) {

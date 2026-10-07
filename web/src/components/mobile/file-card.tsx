@@ -5,28 +5,29 @@ import { cn } from "@/lib/utils";
 import prettyBytes from "pretty-bytes";
 import FileStatus from "@/components/file-status";
 import FileControl from "@/components/file-control";
-import React from "react";
+import React, { memo } from "react";
 import FileExtra from "@/components/file-extra";
 import FileImage from "../file-image";
 import { MobileFileTags } from "@/components/file-tags";
 import { TooltipWrapper } from "@/components/ui/tooltip";
 import { Badge } from "@/components/ui/badge";
 
+// Props must stay referentially stable so memo() can skip unchanged cards.
 type FileCardProps = {
   index: number;
-  className?: string;
-  style?: React.CSSProperties;
+  start: number;
+  size: number;
   ref?: React.Ref<HTMLDivElement>;
   file: TelegramFile;
-  onFileClick: () => void;
-  onFileTagsClick?: () => void;
+  onFileClick: (file: TelegramFile) => void;
+  onFileTagsClick?: (file: TelegramFile) => void;
   layout: "detailed" | "gallery";
 };
 
-export function FileCard({
+export const FileCard = memo(function FileCard({
   index,
-  className,
-  style,
+  start,
+  size,
   ref,
   file,
   onFileClick,
@@ -44,15 +45,16 @@ export function FileCard({
         downloadProgress > 0 && downloadProgress !== 100
           ? `before:w-progress`
           : "before:w-0",
-        className,
+        "absolute left-0 top-0 flex w-full items-center",
       )}
       style={{
         // eslint-disable-next-line @typescript-eslint/ban-ts-comment
         // @ts-expect-error
         "--tw-progress-width": `${downloadProgress > 0 && downloadProgress !== 100 ? downloadProgress.toFixed(0) + "%" : "0"}`,
-        ...style,
+        height: `${size}px`,
+        transform: `translateY(${start}px)`,
       }}
-      onClick={onFileClick}
+      onClick={() => onFileClick(file)}
     >
       <CardContent className="relative z-20 max-h-[340px] w-full p-2">
         <div
@@ -90,7 +92,7 @@ export function FileCard({
                     {file.loaded && (
                       <MobileFileTags
                         tags={file.tags}
-                        onClick={onFileTagsClick}
+                        onClick={() => onFileTagsClick?.(file)}
                       />
                     )}
                   </div>
@@ -109,4 +111,4 @@ export function FileCard({
       </CardContent>
     </Card>
   );
-}
+});
