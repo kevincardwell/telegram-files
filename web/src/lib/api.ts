@@ -35,25 +35,27 @@ export async function request<T = any>(
 
   const response = await fetch(`${getApiUrl()}${api}`, {
     credentials: "include",
+    ...requestInit,
+    // After the spread, so a caller's requestInit.headers can't drop the defaults.
     headers: {
       ...defaultHeaders,
       ...requestInit?.headers,
     },
-    ...requestInit,
   });
   const responseText = await response.text();
-  if (!responseText) {
-    return undefined as T;
-  }
   let data;
-  try {
-    data = JSON.parse(responseText);
-  } catch (e) {
-    throw new RequestParsedError(responseText);
+  if (responseText) {
+    try {
+      data = JSON.parse(responseText);
+    } catch (e) {
+      throw new RequestParsedError(responseText);
+    }
   }
+  // Check status before the empty-body early return: an empty error response must reject, not
+  // resolve to undefined for callers to crash on.
   if (!response.ok) {
     throw new Error(
-      data.error ?? `Request failed with status ${response.status}`,
+      data?.error ?? `Request failed with status ${response.status}`,
     );
   }
 

@@ -14,21 +14,14 @@ export const SWRProvider = ({ children }: { children: React.ReactNode }) => {
         errorRetryCount: 1,
         fetcher: request,
         onError: (err: Error, key: string) => {
-          let message;
-          let isHtml = false;
-          if (err instanceof RequestParsedError) {
-            const responseText = err.responseText;
-            if (/<\/?[a-z][\s\S]*>/i.test(responseText)) {
-              isHtml = true;
-              message = (
-                <div dangerouslySetInnerHTML={{ __html: responseText }}></div>
-              );
-            } else {
-              message = responseText;
-            }
-          } else {
-            message = err.message;
-          }
+          // Server text is rendered as plain text only (tags stripped), never as HTML.
+          const message =
+            err instanceof RequestParsedError
+              ? err.responseText
+                  .replace(/<[^>]*>/g, " ")
+                  .replace(/\s+/g, " ")
+                  .trim()
+              : err.message;
 
           const displayKey = key.startsWith("http")
             ? new URL(key).pathname
@@ -42,11 +35,7 @@ export const SWRProvider = ({ children }: { children: React.ReactNode }) => {
                 <div className="line-clamp-2 break-all text-xs text-muted-foreground">
                   <strong className="text-foreground">Key:</strong> {displayKey}
                 </div>
-                {isHtml ? (
-                  message
-                ) : (
-                  <div className="line-clamp-3 text-wrap">{message}</div>
-                )}
+                <div className="line-clamp-3 text-wrap">{message}</div>
               </div>
             ),
           });
