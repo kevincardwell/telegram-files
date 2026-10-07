@@ -37,27 +37,36 @@ import { useTelegramChat } from "@/hooks/use-telegram-chat";
 
 export function MobileHeader() {
   const [hidden, setHidden] = useState(false);
-  const [lastScrollY, setLastScrollY] = useState(0);
+  const [scrolled, setScrolled] = useState(false);
 
+  // One passive listener for the component's lifetime and at most one update per frame; state
+  // only changes when hidden/scrolled actually flip.
   useEffect(() => {
+    let lastScrollY = window.scrollY;
+    let frame = 0;
     const handleScroll = () => {
-      const currentScrollY = window.scrollY;
-      if (currentScrollY === 0) {
-        setHidden(false); // 回到顶部时显示
-      } else {
-        setHidden(currentScrollY > lastScrollY); // 向下滚动时隐藏
-      }
-      setLastScrollY(currentScrollY);
+      if (frame) return;
+      frame = requestAnimationFrame(() => {
+        frame = 0;
+        const currentScrollY = window.scrollY;
+        // 回到顶部时显示，向下滚动时隐藏
+        setHidden(currentScrollY !== 0 && currentScrollY > lastScrollY);
+        setScrolled(currentScrollY > 0);
+        lastScrollY = currentScrollY;
+      });
     };
 
-    window.addEventListener("scroll", handleScroll);
-    return () => window.removeEventListener("scroll", handleScroll);
-  }, [lastScrollY]);
+    window.addEventListener("scroll", handleScroll, { passive: true });
+    return () => {
+      window.removeEventListener("scroll", handleScroll);
+      cancelAnimationFrame(frame);
+    };
+  }, []);
 
   return (
     <Card
       className={cn(
-        lastScrollY > 0
+        scrolled
           ? "fixed left-0 top-0 z-50 w-full rounded-none border-none bg-white/30 shadow-md backdrop-blur-md transition-transform duration-300 dark:bg-zinc-900/30 dark:shadow-sm dark:shadow-black/30"
           : "mb-4",
         hidden ? "-translate-y-full" : "translate-y-0",
