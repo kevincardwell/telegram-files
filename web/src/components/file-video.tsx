@@ -51,17 +51,60 @@ const getMimeType = (file: TelegramFile): string => {
   return "video/mp4";
 };
 
+// Brave/Chrome on Linux (and Firefox) generally can't decode HEVC/H.265, a common codec for Telegram videos.
+const CODEC_HINT =
+  "Your browser can't decode this video, most likely because it uses the HEVC/H.265 codec. Download it, or open the link below in mpv or VLC.";
+
 const VideoErrorFallback = ({
   className = "",
   message = "Video loading failed!",
-}) => (
-  <div
-    className={`flex flex-col items-center justify-center rounded bg-gray-100 p-4 ${className}`}
-  >
-    <VideoOff className="mb-2 h-8 w-8 text-gray-400" />
-    <p className="text-sm text-gray-500">{message}</p>
-  </div>
-);
+  url,
+  fileName,
+  onRetry,
+}: {
+  className?: string;
+  message?: string;
+  url?: string;
+  fileName?: string;
+  onRetry?: () => void;
+}) => {
+  const absoluteUrl =
+    url && typeof window !== "undefined"
+      ? new URL(url, window.location.origin).toString()
+      : url;
+  return (
+    <div
+      className={`flex flex-col items-center justify-center gap-3 rounded bg-gray-100 p-6 text-center ${className}`}
+    >
+      <VideoOff className="h-8 w-8 text-gray-400" />
+      <p className="max-w-md text-sm text-gray-600">{message}</p>
+      {url && (
+        <div className="flex flex-wrap justify-center gap-2">
+          <Button asChild size="sm">
+            <a href={url} download={fileName ?? true}>
+              Download
+            </a>
+          </Button>
+          {onRetry && (
+            <Button size="sm" variant="outline" onClick={onRetry}>
+              Retry
+            </Button>
+          )}
+        </div>
+      )}
+      {absoluteUrl && (
+        // Plain http has no clipboard API, so make the stream link easy to select instead.
+        <input
+          readOnly
+          value={absoluteUrl}
+          onFocus={(e) => e.currentTarget.select()}
+          className="w-full max-w-md rounded border bg-white px-2 py-1 font-mono text-xs text-gray-600"
+          aria-label="Stream link for an external player"
+        />
+      )}
+    </div>
+  );
+};
 
 const Slider = React.forwardRef<
   React.ComponentRef<typeof SliderPrimitive.Root>,
@@ -388,10 +431,29 @@ const FileVideo = ({
   const [previewMounted, setPreviewMounted] = useState(false);
   const [error, setError] = useState(false);
   const [errorMessage, setErrorMessage] = useState("");
+  // Bumped by "Retry" to remount the <video> and request the file again.
+  const [attempt, setAttempt] = useState(0);
   const [formatWarning, setFormatWarning] = useState<string | null>(null);
 
   const url = `${getApiUrl()}/${file.telegramId}/file/${file.uniqueId}`;
   const mimeType = getMimeType(file);
+
+  // Some files never produce metadata or an error event (e.g. an undecodable codec); don't spin forever.
+  useEffect(() => {
+    if (isPreviewReady || error) return;
+    const timer = setTimeout(() => {
+      setErrorMessage(`The video didn't start loading. ${CODEC_HINT}`);
+      setError(true);
+    }, 15_000);
+    return () => clearTimeout(timer);
+  }, [isPreviewReady, error, attempt]);
+
+  const retry = () => {
+    setError(false);
+    setErrorMessage("");
+    setIsPreviewReady(false);
+    setAttempt((n) => n + 1);
+  };
 
   // Check format compatibility
   useEffect(() => {
@@ -422,7 +484,7 @@ const FileVideo = ({
       video.removeEventListener("playing", handlePlaying);
       video.removeEventListener("canplay", handleCanPlay);
     };
-  }, []);
+  }, [attempt]);
 
   const captureVideoFrame = () => {
     const previewVideo = previewVideoRef.current;
@@ -530,13 +592,13 @@ const FileVideo = ({
           message = "Network error";
           break;
         case 3:
-          message = "Decode error";
+          message = `Decode error. ${CODEC_HINT}`;
           break;
         case 4:
           message = `Unsupported format (${mimeType})`;
-          if (BROWSER_LIMITED_FORMATS[mimeType]) {
-            message += ` - ${BROWSER_LIMITED_FORMATS[mimeType]}`;
-          }
+          message += BROWSER_LIMITED_FORMATS[mimeType]
+            ? ` - ${BROWSER_LIMITED_FORMATS[mimeType]}`
+            : `. ${CODEC_HINT}`;
           break;
         default:
           message = "Unknown error";
@@ -587,6 +649,9 @@ const FileVideo = ({
       <VideoErrorFallback
         className="h-full min-h-[200px] w-full"
         message={errorMessage}
+        url={url}
+        fileName={file.fileName}
+        onRetry={retry}
       />
     );
   }
@@ -616,7 +681,11 @@ const FileVideo = ({
       )}
 
       <video
+        key={attempt}
         ref={videoRef}
+        // src, not <source type=…>: a rejected <source> fires its error on the <source> element, so the
+        // player never heard about it and kept spinning.
+        src={url}
         autoPlay={isMobile}
         onPlay={() => isMobile && !isPlaying && setIsPlaying(true)}
         onEnded={handleEnded}
@@ -625,11 +694,17 @@ const FileVideo = ({
         className={cn("max-h-[calc(100vh-5rem)] w-full", className)}
         onTimeUpdate={handleTimeUpdate}
         onLoadedMetadata={(e) => {
+          // Metadata without picture dimensions: the browser dropped a video track it can't decode and
+          // would play only the audio over a black frame.
+          if (e.currentTarget.videoWidth === 0) {
+            setErrorMessage(CODEC_HINT);
+            setError(true);
+            return;
+          }
           setDuration(e.currentTarget.duration);
           setIsPreviewReady(true);
         }}
       >
-        <source src={url} type={mimeType} />
         Your browser does not support this video format
       </video>
 
@@ -637,13 +712,12 @@ const FileVideo = ({
       {!isMobile && previewMounted && (
         <video
           ref={previewVideoRef}
+          src={url}
           className="hidden"
           preload="metadata"
           muted
           onSeeked={captureVideoFrame}
-        >
-          <source src={url} type={mimeType} />
-        </video>
+        />
       )}
 
       {loading && (

@@ -134,9 +134,12 @@ public class FileRouteHandler {
         // notify client we support range requests
         headers = response.headers();
         headers.set(HttpHeaders.ACCEPT_RANGES, "bytes");
-        // Content never changes for a given file uniqueId: let the browser keep thumbnails and previews
-        // instead of refetching them whenever a row re-mounts while scrolling.
-        headers.set(HttpHeaders.CACHE_CONTROL, "private, max-age=604800, immutable");
+        // Content never changes for a given file uniqueId: let the browser keep thumbnails and photos instead
+        // of refetching them whenever a row re-mounts. Not video/audio: their range requests are served
+        // without validators, which browsers' partial-content caching doesn't handle reliably.
+        if (contentType != null && contentType.startsWith("image/")) {
+            headers.set(HttpHeaders.CACHE_CONTROL, "private, max-age=604800, immutable");
+        }
         // send the content length even for HEAD requests
         headers.set(HttpHeaders.CONTENT_LENGTH, Long.toString(end + 1 - (offset == null ? 0 : offset)));
 
